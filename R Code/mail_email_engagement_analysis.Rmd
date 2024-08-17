@@ -1,0 +1,639 @@
+---
+title: "mail_email_engagement_analysis. Any opinions and conclusions expressed herein are those of the author(s) and do not reflect the views of the U.S. Census Bureau. The Census Bureau has reviewed this data product to ensure appropriate access, use, and disclosure avoidance protection of the confidential source data (Project No. P-7529180, Disclosure Review Board (DRB) approval number:  CBDRB-FY24-EWD001-007)"
+output: html_document
+date: "2024-08-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Load packages 
+```{r}
+library(tidyverse)
+library(haven)
+library(lubridate)
+library(ggplot2)
+library(DBI)
+library(stringr)
+```
+
+Email Engagement Shelf Life Analysis
+# Setting Up connection 
+database connection no longer connects/connection has been changed for external publication
+```{r}
+
+ 
+pass = rstudioapi::askForPassword("Database password")
+con_string = paste0(
+  "Driver=driver;DBQ=db;SVD=EXTRACTS;UID=username;PWD=",pass)
+ 
+query_aces <- 'select * from ACES'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+aces_query = dbplyr::build_sql(dbplyr::sql(query_aces), con = con)
+aces = DBI::dbGetQuery(con, aces_query)
+
+
+```
+
+# Reading in compendium  
+file paths have been changed for external release and no longer work
+```{r}
+comm = read_csv("inputs/compendium updated/comm_more.csv")
+email = read_csv("inputs/compendium updated/email_more.csv")
+head(comm)
+head(email)
+```
+
+```{r}
+# Function to calculate frequencies
+# survey_name is first 4 characters of survey name 
+email_frequency <- function(email, survey_name, auth_code_df) {
+  # filter out auth code data to only include the auth codes that were burned
+  auth_code_data = auth_code_df %>% filter(AUTH_USED == "U") %>% select(AUTHDATE_BANK)
+  auth_code_data$AUTHDATE_BANK = as.Date(auth_code_data$AUTHDATE_BANK)
+  # tables of date and number of emails sent 
+  emails_day_of = email %>% filter(substr(survey_ID, 1, 4) == survey_name) %>% 
+    group_by(send_date) %>% summarise(n_email = n(), total_sent = sum(n_sent))
+
+  
+  # making tables which contain the dates of what would be the day sent, prev day, etc. 
+  emails_day_prev = emails_day_of %>% group_by(send_date) %>% mutate(date_prev = send_date - days(1))
+  emails_day_after= emails_day_of %>% group_by(send_date) %>% mutate(date_after = send_date + days(1))
+  emails_2day_after= emails_day_of %>% group_by(send_date) %>% mutate(date_2after = send_date + days(2))
+  emails_3day_after = emails_day_of %>% group_by(send_date) %>% mutate(date_3after = send_date + days(3))
+  
+
+  # merging auth code usage table to emails tables ultimately to get the total count of codes burned on a certain date
+  activity_day_of = merge(emails_day_of, auth_code_data, by.y = "AUTHDATE_BANK", by.x = "send_date")
+  activity_day_prev = merge(emails_day_prev, auth_code_data, by.y = "AUTHDATE_BANK", by.x = "date_prev")
+  activity_day_after = merge(emails_day_after, auth_code_data, by.y = "AUTHDATE_BANK", by.x = "date_after")
+  activity_2day_after = merge(emails_2day_after, auth_code_data, by.y = "AUTHDATE_BANK", by.x = "date_2after")
+  activity_3day_prev = merge(emails_3day_after, auth_code_data, by.y = "AUTHDATE_BANK", by.x = "date_3after")
+  
+
+  
+  # getting # of burned codes
+  activity_day_of = activity_day_of %>% group_by(send_date) %>% summarise(n_burned_day_of = n())
+  activity_day_prev = activity_day_prev %>% group_by(send_date) %>% summarise(n_burned_day_prev = n())
+  activity_day_after= activity_day_after %>% group_by(send_date) %>% summarise(n_burned_day_after = n()) 
+  activity_2day_after = activity_2day_after %>% group_by(send_date) %>% summarise(n_burned_2day_after = n())
+  activity_3day_after = activity_3day_prev %>% group_by(send_date) %>% summarise(n_burned_3day_after = n())
+
+  # need a list of all unique send dates so that dates aren't lost if there is a count of 0 in one of the tables
+  all_dates = unique(c(emails_day_of$send_date))
+  # merging activity summary data frames
+  activity_day_prev <- merge(data.frame(send_date = all_dates), activity_day_prev, by = "send_date", all.x = TRUE)
+  activity_day_of <- merge(data.frame(send_date = all_dates), activity_day_of, by = "send_date", all.x = TRUE)
+  activity_day_after <- merge(data.frame(send_date = all_dates), activity_day_after, by = "send_date", all.x = TRUE)
+  activity_2day_after <- merge(data.frame(send_date = all_dates), activity_2day_after, by = "send_date", all.x = TRUE)
+  activity_3day_after <- merge(data.frame(send_date = all_dates), activity_3day_after, by = "send_date", all.x = TRUE)
+
+  
+  activity_merged = emails_day_of %>%
+    merge(activity_day_prev, by = 'send_date')%>%
+  merge(activity_day_of, by = "send_date") %>%
+  merge(activity_day_after, by = "send_date") %>%
+  merge(activity_2day_after, by = "send_date") %>%
+  merge(activity_3day_after, by = "send_date")
+
+  # percent change in # of burned codes between days 
+  activity_merged$per_diff_1 = round(( (activity_merged$n_burned_day_of - 
+                                    activity_merged$n_burned_day_prev)/activity_merged$n_burned_day_prev) * 100, 2)
+  activity_merged$per_diff_2 = round(( (activity_merged$n_burned_day_after - 
+                                    activity_merged$n_burned_day_of)/activity_merged$n_burned_day_of) * 100, 2)
+  activity_merged$per_diff_3 =round( ( (activity_merged$n_burned_2day_after - 
+                                    activity_merged$n_burned_day_after)/activity_merged$n_burned_day_after) * 100, 2)
+  activity_merged$per_diff_4 = round(( (activity_merged$n_burned_3day_after - 
+                                    activity_merged$n_burned_2day_after)/
+                                      activity_merged$n_burned_2day_after) * 100, 2)
+  # percent of people who received email who burned their code 
+  # recognize that just because they burned their code that day does't mean it was because of the email 
+  email_survey = email %>% filter(substr(survey_ID, 1, 4) == survey_name)
+  merged = merge(email_survey, activity_merged, by = 'send_date')
+  
+  merged$per_sent_prev = round((merged$n_burned_day_prev/merged$total_sent) * 100, 2)
+  merged$per_sent_day_of = round((merged$n_burned_day_of/merged$total_sent) * 100, 2)
+  merged$per_sent_1day_after = round((merged$n_burned_day_after/merged$total_sent) * 100, 2)
+  merged$per_sent_2day_after =round((merged$n_burned_2day_after/merged$total_sent) * 100, 2)
+  merged$per_sent_3day_after = round((merged$n_burned_3day_after/merged$total_sent) * 100, 2)
+  return(merge( comm %>% select(c(ID, com_cat, message_type)),merged, by.y = "com_ID", by.x = "ID"))
+}
+
+
+aces_email_freq = email_frequency(email, 'ACES', aces)
+
+print(aces_email_freq)
+```
+
+# EDA on ACES survey 
+Look at possible correlation between comm type 
+```{r}
+summary(aces_email_summary)
+```
+It is observed that for the percent of codes getting burned, there are some major outliers. For example, while the number of codes getting burns typically starts to decrease the day after getting sent, some observations record the number of burned codes jumping by 400%. This indicates that there may be other communication going on or that it is really early in the timeline when many people are burning their codes. 
+
+```{r}
+# sorted in order of percent increase in activity (day prev sendout vs day of)
+# notes: initial has the highest percentage as expected, mostly followups have the highest boost
+# however, it's noted that the FUs do not show a pattern (ex: 1st FUs do not consistently have higher boosts than 4th FUs)
+aces_email_freq %>% arrange(desc(per_diff_1))
+aces_email_freq %>% arrange(desc(per_diff_2))
+aces_email_freq %>% arrange(desc(per_sent_day_of))
+aces_email_freq %>% arrange(desc(per_sent_1day_after))
+
+```
+
+# looking at other surveys
+
+```{r}
+# arts
+query_arts <- 'select * from ARTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+arts_query = dbplyr::build_sql(dbplyr::sql(query_arts), con = con)
+arts = DBI::dbGetQuery(con, arts_query)
+
+# awts
+query_awts <- 'select * from AWTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+awts_query = dbplyr::build_sql(dbplyr::sql(query_awts), con = con)
+awts = DBI::dbGetQuery(con, awts_query)
+
+# sas
+query_sas <- 'select * from SAS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+sas_query = dbplyr::build_sql(dbplyr::sql(query_sas), con = con)
+sas = DBI::dbGetQuery(con, sas_query)
+
+# cos
+c17 = read.delim("Bank Authcode/COSASM_2017.dat", sep = "|")
+c18 = read.delim("Bank Authcode/COSASM_2018.dat", sep = "|")
+c19 = read.delim("Bank Authcode/COSASM_2019.dat", sep = "|")
+c20 = read.delim("Bank Authcode/COSASM_2020.dat", sep = "|")
+c21 = read.delim("Bank Authcode/COSASM_2021.dat", sep = "|")
+c22 = read.delim("Bank Authcode/COSASM_2022.dat", sep = "|")
+c_list =  lapply(c("c17", 'c18', 'c19', 'c20', 'c21', 'c22'), get)
+cosasm = do.call(rbind, c_list)
+names(cosasm)[names(cosasm) == "DATE"] = "AUTHDATE_BANK"
+cosasm$AUTH_USED = substr(cosasm$STATUS, 1, 1)
+cosasm$AUTHDATE_BANK <- as.Date(cosasm$AUTHDATE_BANK, format = "%d-%b-%Y")
+
+```
+
+# calculating # of codes burned
+```{r}
+arts_email_freq = email_frequency(email, 'ARTS', arts)
+awts_email_freq = email_frequency(email, 'AWTS', awts)
+sas_email_freq = email_frequency(email, 'SAS_', sas)
+cosasm_email_freq = email_frequency(email, 'COS/', cosasm)
+
+#combining all surveys back into one table 
+email_freq = rbind(aces_email_freq, awts_email_freq, arts_email_freq, sas_email_freq, cosasm_email_freq)
+email_freq %>% arrange(desc(per_diff_1))
+
+# defining emails which have comm withint 5 days of the mailout
+comm$recent_comm = (comm$days_past_last_comm <= 5)
+email_freq_new = merge(email_freq, comm %>% select(c(ID, recent_comm, days_past_open, 
+                                                     days_past_last_comm, days_past_same_comm)), 
+      by = 'ID')
+
+# write new csv of # of codes burned in days surrounding email sendouts
+write.csv(email_freq_new, 
+          "inputs/compendium updated/email_freq.csv",
+          row.names = FALSE)
+```
+
+# Visualization 
+
+```{r}
+# reload email engagement csv
+email_freq = read_csv("inputs/compendium updated/email_freq.csv")
+email_freq$year = year(email_freq$send_date) - 1
+email_freq$survey = substr(email_freq$survey_ID, 1,3)
+email_freq
+```
+
+
+# analysis of layered communication
+#Question: Does layering communication methods boost engagement?
+
+
+```{r}
+# defining emails which have comm withint 5 days of the mailout
+comm$recent_comm = (comm$days_past_last_comm <= 5)
+email_freq_new = merge(email_freq, comm %>% select(c(ID, recent_comm, days_past_open, 
+                                                     days_past_last_comm, days_past_same_comm)), 
+      by = 'ID')
+table(email_freq$recent_comm)
+table(email_freq$recent_comm, email_freq$year) %>% prop.table(margin = 2)
+table(email_freq$recent_comm, email_freq$survey) %>% prop.table(margin = 2)
+
+# communication within 5 days makes clear difference
+# higher number of codes burned for both median and mean 
+email_freq %>% filter(recent_comm == TRUE)
+email_freq %>% filter(recent_comm == TRUE) %>% 
+  summarise(median(per_sent_prev, na.rm = TRUE), median(per_sent_day_of, na.rm = TRUE), 
+            median(per_sent_1day_after, na.rm = TRUE),
+            median(per_sent_2day_after, na.rm = TRUE), median(per_sent_3day_after, na.rm = TRUE))
+email_freq %>% filter(recent_comm == FALSE)
+email_freq %>% filter(recent_comm == FALSE) %>% 
+  summarise(median(per_sent_prev, na.rm = TRUE), median(per_sent_day_of, na.rm = TRUE),
+            median(per_sent_1day_after, na.rm = TRUE),
+            median(per_sent_2day_after, na.rm = TRUE), median(per_sent_3day_after, na.rm = TRUE))
+```
+
+```{r}
+median_burned_longer = email_freq %>% filter(message_type != 'initial') %>% group_by(survey) %>%
+  summarise(n1 = median(n_burned_day_prev , na.rm = TRUE), n2=median(n_burned_day_of, na.rm = TRUE),
+            n3=median(n_burned_day_after, na.rm = TRUE),n4=median(n_burned_2day_after, na.rm = TRUE),
+            n5=median(n_burned_3day_after, na.rm = TRUE)) %>%
+  pivot_longer(cols = starts_with("n"), names_to = "Day", values_to = "Value")
+
+p_median_engagement = ggplot(data = median_burned_longer, aes(x =Day, y = Value, group = survey , color = survey)) + geom_line(linewidth = 1) +
+  labs(y = "Median Number of Authentication Codes Burned", title = "Email Engagement is Immediate but Short", 
+       color = "Survey", x = "") + 
+   scale_x_discrete(labels = c("n1" = "Previous Day", "n2" = "Sendout Day", "n3" = "Day After",
+                    "n4" = "2 Days After","n5" = "3 Days After")) + 
+  scale_color_manual(values = c("ACE" = "#26C6DA", "ART" = "#112E51", "AWT" = "#FF7043",
+                    "SAS" = "#2E78D2","COS" = "#78909C"),
+                     labels = c("ACE" = "ACES", "ART" = "ARTS", "AWT" = "AWTS",
+                    "SAS" = "SAS","COS" = "COS/ASM")) +
+  theme_minimal() + theme(text = element_text(size = 14))
+p_median_engagement
+ggsave(filename = "Figures/median_engagement_email.png", 
+       plot = p_median_engagement, width = 8, height = 6, units = "in")
+```
+
+Mail Engagement Shelf Life Analysis
+
+# loading in data
+
+previously manipulation occurred for the survey data (in exploratory analysis modeling file) that calculated the daily authentication code burn use and ratio for each day in the collection period where code use is greater than 0. 
+```{r}
+#reading in survey data
+aces_stats = read.csv("inputs/auth_code_br_duedate/aces_daily_br.csv")
+sas_stats = read.csv("inputs/auth_code_br_duedate/sas_daily_br.csv")
+awts_stats = read.csv("inputs/auth_code_br_duedate/awts_daily_br.csv")
+arts_stats = read.csv("inputs/auth_code_br_duedate/arts_daily_br.csv")
+cosasm_stats = read.csv("inputs/auth_code_br_duedate/COSASM_daily_br.csv")
+
+#reading in communication-related data
+mail = read.csv("inputs/compendium updated/mail_more.csv")
+
+#reformatting date variable in all datasets
+comm$date = as.Date(comm$date, format = "%Y-%m-%d")
+mail$date = as.Date(mail$date, format = "%m/%d/%Y")
+
+aces_stats$AUTHDATE_BANK = as.Date(aces_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+arts_stats$AUTHDATE_BANK = as.Date(arts_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+awts_stats$AUTHDATE_BANK = as.Date(awts_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+sas_stats$AUTHDATE_BANK = as.Date(sas_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+cosasm_stats$AUTHDATE_BANK = as.Date(cosasm_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+
+
+```
+
+```{r}
+#calculating the number of days mailings were sent for each survey collection period
+#splitting the survey id into two variables 
+mail_agg = mail %>% group_by(survey_id, date) %>% summarise(total_day_mail_sent = sum(n_sent))
+mail_agg[c('Survey', 'Year')] <- str_split_fixed(mail_agg$survey_id, '_', 2)
+```
+
+
+# function to look at mail activity window 
+```{r}
+mail_window = function(surveydata, maildata, surveyname, windowlimit){
+  #function reviews the survey data with daily authentication code use and 
+  #filters the dataset so it only includes the days that are within a certain window of a mailing
+  #saves results in new dataframe
+  
+  #inputs:
+  #surveydata - dataset for survey; unique variable is the AUTHDATE_BANK date because of previous manipulation
+  #maildata - dataset of mailings across all surveys and collection periods
+  #surveyname - character that matches the 'Survey' field in maildata
+  #windowlimit - integer that defines the window (in days) the function will look after the maildate
+  
+  results_dataset = data.frame()
+  #filter maildata so it only includes survey years 2017-2022 and focuses only on one survey
+  surveymaildata = maildata %>% filter(Survey == surveyname & Year > 2016)
+  #iterates through the filtered maildata dates 
+  for (i in seq(nrow(surveymaildata))){
+    maildate = surveymaildata$date[i] #date that a mailing was sent out
+    
+    mailwindow = maildate + windowlimit #creates a window of time, because maildate is a date datatype adding a number will result in a date in the future
+    
+    #filters surveydata so that it only includes observations whose date falls within the date window 
+    filtered_surveydata = surveydata %>% filter(AUTHDATE_BANK >= maildate & AUTHDATE_BANK <= mailwindow)
+    
+    if (nrow(filtered_surveydata) >0){ #if statement excludes instances where no codes were used in the period following the mailout date
+      filtered_length = nrow(filtered_surveydata)-1
+      filtered_surveydata$DOW = weekdays(filtered_surveydata$AUTHDATE_BANK)
+      day_count = data.frame("Day_Count" = seq(0, filtered_length)) #counts the number of days within the window; day 0 is the mailout day
+      mail_count = data.frame("Mail_Count" = rep(i, nrow(filtered_surveydata))) #represents the count of the specific mailing in the surveymaildata
+      
+      #save results filtered surveydataset and the created columns together
+      filtered_surveydata_v2 = bind_cols(filtered_surveydata, day_count, mail_count)
+      
+      #save created dataset for the mailing window in the output dataframe
+      results_dataset = bind_rows(results_dataset, filtered_surveydata_v2)
+  }
+  
+  }
+  return(results_dataset)
+}
+```
+
+```{r}
+#running function for AWTS and creating graphs
+awts_mailperiods = mail_window(awts_stats, mail_agg, "AWTS", 14)]
+
+ggplot(awts_mailperiods %>% filter(STATP00 == "2020A1"), aes(x=days_relative_duedate, y = count_used, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + theme(legend.position="none") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+
+ggplot(awts_mailperiods %>% filter(STATP00 == "2020A1"), aes(x=days_relative_duedate, y = used_overall_ratio, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + theme(legend.position="none") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+```
+
+```{r}
+#running function for other survey datasets and creating similar graphs
+arts_mailperiods = mail_window(arts_stats, mail_agg, "ARTS", 14)
+aces_mailperiods = mail_window(aces_stats, mail_agg, "ACES", 14)
+sas_mailperiods = mail_window(sas_stats, mail_agg, "SAS", 14)
+cosasm_mailperiods = mail_window(arts_stats, mail_agg, "COS/ASM", 14)
+
+ggplot(arts_mailperiods %>% filter(STATP00 == "2020A1"), aes(x=days_relative_duedate, y = count_used, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + theme(legend.position="none") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+
+ggplot(arts_mailperiods %>% filter(STATP00 == "2020A1"), aes(x=days_relative_duedate, y = used_overall_ratio, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + theme(legend.position="none") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+
+ggplot(aces_mailperiods %>% filter(STATP00 == "2020A1"), aes(x=days_relative_duedate, y = count_used, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + theme(legend.position="none") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+
+ggplot(aces_mailperiods %>% filter(STATP00 == "2020A1"), aes(x=days_relative_duedate, y = used_overall_ratio, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + theme(legend.position="none") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+```
+
+# function
+
+
+```{r}
+percent_change = function(dataset){
+  #function calculcates the percent change in the authentication use count between days in each mailing window (represented by mail_count)
+  #specifically compares value of count_used to the previous day's/observation's value
+  #input is the dataset created with the previous function
+  #output is dataset with new column "Percent_change"
+  d2 = dataset %>% arrange(Mail_Count) %>% mutate(Percent_Change = round(((count_used/lag(count_used)-1)*100),2)) %>% select(STATP00, AUTHDATE_BANK, DOW, count_used, Day_Count, Mail_Count, Percent_Change) 
+  d2$Percent_Change[d2$Day_Count == 0] <- NA #replacing values for the mailout day since we are not looking outside the mailing window 
+  return(d2)
+}
+
+#running function with all survey datasets
+awts_percchange = percent_change(awts_mailperiods)
+arts_percchange = percent_change(arts_mailperiods)
+sas_percchange = percent_change(sas_mailperiods)
+aces_percchange = percent_change(aces_mailperiods)
+cosasm_percchange = percent_change(cosasm_mailperiods)
+
+#creating variable in survey dataset that represent the survey it is associated with
+cosasm_percchange$Survey = "COS/ASM"
+awts_percchange$Survey = "AWTS"
+aces_percchange$Survey = "ACES"
+arts_percchange$Survey = "ARTS"
+sas_percchange$Survey = "SAS"
+
+#compiling results into one dataset
+allsurveymail = rbind(cosasm_percchange, awts_percchange, aces_percchange, arts_percchange, sas_percchange)
+```
+
+# Visualization 
+```{r}
+#visualization for Median authentication code use across all survey mailings
+median_mail_count = allsurveymail %>% group_by(Survey, Day_Count) %>%
+  summarise(median_usecount = median(count_used, na.rm = TRUE), median_percchange=median(Percent_Change, na.rm = TRUE))
+cols <- c("ACES" = "#26C6DA", "ARTS" = "#112E51", "AWTS" = "#FF7043", "COS/ASM" = "#78909C", "SAS" = "#2E78D2")
+
+mail_window = ggplot(data = median_mail_count, aes(x =Day_Count, y = median_usecount, color = Survey)) + geom_line(linewidth = 1)  + scale_color_manual(values = cols) + theme_minimal() + ggtitle("Impact of Mailings Occurs 4-7 Days after Sendout") + theme(text = element_text(size = 14)) + ylab("Median Number of Authentication Codes Burned") + scale_x_continuous(name = "", limits=c(0, 10), breaks=c(0,5,10), label = c("Mailout Day", "5 Days After", "10 Days After"))
+mail_window
+ggsave(filename = "Figures/mail_window.png", plot = mail_window, width = 8, height = 6, units = "in")
+```
+
+
+```{r}
+#visualization for median percent change across all survey mailings
+mail_window_change = ggplot(data = median_mail_count, aes(x =Day_Count, y = median_percchange, color = Survey)) + geom_line(linewidth = 0.75)  + scale_color_manual(values = cols) + theme_minimal() + ggtitle("Authentication Code Use Percentage Change the 14 days after Mailings", subtitle = "For 5 Annual Economic Surveys") + theme(text = element_text(size = 10, family = "Roboto")) + ylab("Median Authentication Code Use Count") + xlab("Days since Mailing")
+mail_window_change
+
+```
+
+#Overlap between email and mail
+```{r}
+
+#using dataset without the percent change
+awts_mailperiods$Survey = "AWTS"
+aces_mailperiods$Survey = "ACES"
+sas_mailperiods$Survey = "SAS"
+cosasm_mailperiods$Survey = "COS/ASM"
+arts_mailperiods$Survey = "ARTS"
+
+comm[c('Survey', 'Year')] <- str_split_fixed(comm$survey_ID, '_', 2)
+comm$com_type = toupper(comm$com_type)
+
+
+```
+
+
+```{r}
+
+email_check = function(surveydata, commdata, surveyname){
+  #function looks through the dates in the surveydata dataset and indicates 
+  #whether an email was sent on that day based on the survey's communication strategy
+  #returns survey dataset with an additional dummy variable
+  
+  surveycomm = commdata %>% filter(Survey == surveyname & com_type == "EMAIL")
+  emaildates = unique(surveycomm$date)
+  surveydata$email_ind = ifelse(surveydata$AUTHDATE_BANK %in% emaildates, 1, 0)
+  return (surveydata)
+}
+
+```
+
+```{r}
+#running mailingperiod surveydata through the function
+arts_mailperiods_v2 = email_check(arts_mailperiods, comm, "ARTS")
+aces_mailperiods_v2 = email_check(aces_mailperiods, comm, "ACES")
+awts_mailperiods_v2 = email_check(awts_mailperiods, comm, "AWTS")
+sas_mailperiods_v2 = email_check(sas_mailperiods, comm, "SAS")
+cosasm_mailperiods_v2 = email_check(cosasm_mailperiods, comm, "COS/ASM")
+
+```
+
+#visualizations
+
+visuals looking at mailing periods but also differentiates if on that day an email was sent
+
+```{r}
+
+
+f1 = ggplot(awts_mailperiods_v2 %>% filter(STATP00 == "2020A1"), aes(x=days_relative_duedate, y = count_used, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75) 
+
+f1 + geom_point(data = awts_mailperiods_v2 %>% filter(STATP00 == "2020A1" & email_ind == 1), aes(x=days_relative_duedate, y = count_used, colour = as.factor(Mail_Count)), size = 3) + theme_minimal() + theme(legend.position="none")
+
+
+
+```
+
+
+```{r}
+
+
+f2 = ggplot(arts_mailperiods_v2 %>% filter(STATP00 == "2022A1"), aes(x=days_relative_duedate, y = count_used, colour = as.factor(Mail_Count))) + geom_line(linewidth = 0.75) + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75) 
+
+f2 + geom_point(data = arts_mailperiods_v2 %>% filter(STATP00 == "2022A1" & email_ind == 1), aes(x=days_relative_duedate, y = count_used, colour = as.factor(Mail_Count)), size = 3) + theme_minimal() + theme(legend.position="none")
+
+
+
+```
+
+#Overlap calculations
+
+looking at the maximum counts in each mailing window and discerning whether that day was also a day an email was sent
+```{r}
+arts_max = arts_mailperiods_v2 %>% group_by(Mail_Count) %>% top_n(1, count_used)
+table(arts_max$email_ind)
+table(arts_max$email_ind, arts_max$STATP00)
+```
+
+
+```{r}
+aces_max = aces_mailperiods_v2 %>% group_by(Mail_Count) %>% top_n(1, count_used)
+table(aces_max$email_ind)
+table(aces_max$email_ind, aces_max$STATP00)
+```
+
+
+```{r}
+awts_max = awts_mailperiods_v2 %>% group_by(Mail_Count) %>% top_n(1, count_used)
+table(awts_max$email_ind)
+table(awts_max$email_ind, awts_max$STATP00)
+```
+
+```{r}
+sas_max = sas_mailperiods_v2 %>% group_by(Mail_Count) %>% top_n(1, count_used)
+table(sas_max$email_ind)
+table(sas_max$email_ind, sas_max$STATP00)
+```
+
+
+```{r}
+cosasm_max = cosasm_mailperiods_v2 %>% group_by(Mail_Count) %>% top_n(1, count_used)
+table(cosasm_max$email_ind)
+table(cosasm_max$email_ind, cosasm_max$STATP00)
+```
+
+calculating the percentage of the mailing windows (14 days) for each survey collection period where the day in the window with the highest count was also the day where the email was sent
+```{r}
+
+aces_max_2 = aces_max %>% group_by(Survey, STATP00) %>% summarise(yearcount = n(), email_max_count = sum(email_ind), email_max_perc = (round(email_max_count / yearcount *100, 2)))
+awts_max_2 = awts_max %>% group_by(Survey, STATP00) %>% summarise(yearcount = n(), email_max_count = sum(email_ind), email_max_perc = (round(email_max_count / yearcount *100, 2)))
+arts_max_2 = arts_max %>% group_by(Survey, STATP00) %>% summarise(yearcount = n(), email_max_count = sum(email_ind), email_max_perc = (round(email_max_count / yearcount *100, 2)))
+sas_max_2 = sas_max %>% group_by(Survey, STATP00) %>% summarise(yearcount = n(), email_max_count = sum(email_ind), email_max_perc = (round(email_max_count / yearcount *100, 2)))
+cosasm_max_2 = cosasm_max %>% group_by(Survey, STATP00) %>% summarise(yearcount = n(), email_max_count = sum(email_ind), email_max_perc = (round(email_max_count / yearcount *100, 2)))
+
+allmax = rbind(aces_max_2,awts_max_2, arts_max_2, sas_max_2, cosasm_max_2)
+
+
+allmax$Year[allmax$STATP00 == "2017A1"] <- 2017
+allmax$Year[allmax$STATP00 == "2018A1"] <- 2018
+allmax$Year[allmax$STATP00 == "2019A1"] <- 2019
+allmax$Year[allmax$STATP00 == "2020A1"] <- 2020
+allmax$Year[allmax$STATP00 == "2021A1"] <- 2021
+allmax$Year[allmax$STATP00 == "2022A1"] <- 2022
+
+```
+
+
+```{r}
+#calculating mean for different years
+mean(allmax$email_max_perc[allmax$Year == 2022])
+mean(allmax$email_max_perc[allmax$Year == 2018])
+
+```
+
+```{r}
+#looking at a smaller window (days 3 to 7 after mailout) 
+allmailperiods = rbind(cosasm_mailperiods_v2, aces_mailperiods_v2, awts_mailperiods_v2, arts_mailperiods_v2, sas_mailperiods_v2)
+allmail_days3to7 = allmailperiods %>% filter(Day_Count <=7 & Day_Count > 2) 
+allmail_oneweekmax = allmail_days3to7 %>% group_by(Survey, Mail_Count) %>% top_n(1, count_used)
+
+allmail_oneweek_emailmax = allmail_oneweek %>% group_by(Survey, STATP00) %>% summarise(yearcount = n(), email_max_count = sum(email_ind), email_max_perc = (round(email_max_count / yearcount *100, 2)))
+
+allmail_oneweek_emailmax$Year[allmail_oneweek_emailmax$STATP00 == "2017A1"] <- 2017
+allmail_oneweek_emailmax$Year[allmail_oneweek_emailmax$STATP00 == "2018A1"] <- 2018
+allmail_oneweek_emailmax$Year[allmail_oneweek_emailmax$STATP00 == "2019A1"] <- 2019
+allmail_oneweek_emailmax$Year[allmail_oneweek_emailmax$STATP00 == "2020A1"] <- 2020
+allmail_oneweek_emailmax$Year[allmail_oneweek_emailmax$STATP00 == "2021A1"] <- 2021
+allmail_oneweek_emailmax$Year[allmail_oneweek_emailmax$STATP00 == "2022A1"] <- 2022
+```
+
+
+
+```{r}
+
+mean(allmail_oneweek_emailmax$email_max_perc[allmail_oneweek_emailmax$Year == 2022]) 
+mean(allmail_oneweek_emailmax$email_max_perc[allmail_oneweek_emailmax$Year == 2018]) 
+```
+
+
+```{r}
+#looking at the percentage of 14-day mailing windows where at least 1 email occurs in the mailing period 
+email2weeks = allmailperiods %>% group_by(Survey, Mail_Count) %>% summarise(email_count = sum(email_ind))
+
+prop.table(table(email2weeks$email_count))
+```
+
+```{r}
+#looking at the percentage of 3-7 day mailing windows where at least 1 email occurs in the mailing period 
+email3to7days = allmail_days3to7 %>% group_by(Survey, Mail_Count) %>% summarise(email_count = sum(email_ind))
+prop.table(table(email2to7days$email_count))
+
+```
+
+
+```{r}
+#subsetting data to only include mailing windows where emails were sent during days 3-7 after mailout
+allmail_days3to7$survey_mail = paste(allmail_days3to7$Survey, allmail_days3to7$Mail_Count, sep="_")
+email3to7days$survey_mail = paste(email3to7days$Survey, email3to7days$Mail_Count, sep = "_")
+emailincluded = unique(email3to7days$survey_mail[email3to7days$email_count > 0])
+
+#of these only email cases, calculating the percentage where the highest use count day was an email day
+onlyemailcases = allmail_days3to7 %>% filter(survey_mail %in% emailincluded)
+onlyemailcases_max = onlyemailcases %>% group_by(Survey, Mail_Count) %>% top_n(1, count_used)
+
+table(onlyemailcases_max$email_ind)
+prop.table(table(onlyemailcases_max$email_ind))
+
+```
+
+```{r}
+#subsetting data to only include mailing windows where emails were sent within 2 weeks after mailout
+allmailperiods$survey_mail = paste(allmailperiods$Survey, allmailperiods$Mail_Count, sep="_")
+email2weeks$survey_mail = paste(email2weeks$Survey, email2weeks$Mail_Count, sep = "_")
+emailincluded_2wk = unique(email2weeks$survey_mail[email2weeks$email_count > 0])
+
+#of these only email cases, calculating the percentage where the highest use count day was an email day
+onlyemailcases_2wk = allmailperiods %>% filter(survey_mail %in% emailincluded_2wk)
+onlyemailcases_2wkmax = onlyemailcases_2wk %>% group_by(Survey, Mail_Count) %>% top_n(1, count_used)
+table(onlyemailcases_2wkmax$email_ind)
+prop.table(table(onlyemailcases_2wkmax$email_ind))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+

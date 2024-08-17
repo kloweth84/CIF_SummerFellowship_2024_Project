@@ -1,0 +1,235 @@
+---
+title: "creating_new_communication_survey_variables. Any opinions and conclusions expressed herein are those of the author(s) and do not reflect the views of the U.S. Census Bureau. The Census Bureau has reviewed this data product to ensure appropriate access, use, and disclosure avoidance protection of the confidential source data (Project No. P-7529180, Disclosure Review Board (DRB) approval number:  CBDRB-FY24-EWD001-007)"
+output: html_document
+date: "2024-08-13"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#loading packages
+```{r}
+library(tidyverse)
+library(haven)
+library(lubridate)
+library(ggplot2)
+library(DBI)
+library(stringr)
+library(vtable)
+```
+
+# Getting Burn Rate and other variables for the compendium (new variables)
+
+file paths have been changed for external release and no longer work
+```{r}
+# read in tables
+comm = read_csv("inputs/communication.csv")
+survey = read_csv("inputs/survey.csv")
+call = read_csv("inputs/call.csv")
+email = read_csv("inputs/email.csv")
+mail = read_csv("inputs/mail.csv")
+robo = read_csv("inputs/robocall.csv")
+```
+
+```{r}
+# merging communication and survey tables 
+comm_survey = comm_survey %>%
+  group_by(survey_ID) %>%
+  mutate(days_past_last_comm = as.numeric(date - lag(date), unit = 'days'))
+
+# creating new variables 
+# days since open date on survey 
+comm_survey$days_past_open <- as.numeric(difftime(comm_survey$date, comm_survey$open_date, units = "days"))
+
+# days past last contact point  
+comm_survey = comm_survey %>%
+  group_by(survey_ID) %>%
+  mutate(days_past_last_comm = as.numeric(date - lag(date), unit = 'days'))
+
+# days past same type of communication
+comm_survey %>%
+  group_by(survey_ID, com_type) %>% 
+  mutate(days_past_same_comm = as.numeric(date - lag(date), unit = 'days')) %>% 
+  select(date, days_past_same_comm)
+
+# reducing comm_survey back into communication table 
+comm_more = comm_survey[c(1:9, 25:27)] 
+
+# relabeling columns
+names(comm_more)[names(comm_more) == 'feb_birth.x'] <- 'feb_birth'
+names(comm_more)[names(comm_more) == 'may_birth.x'] <- 'may_birth'
+names(comm_more)[names(comm_more) == 'august_birth.x'] <- 'august_birth'
+comm_more
+
+
+# collection period length to survey table
+survey$collection_length = as.numeric(survey$close_date - survey$open_date, unit = 'days')
+
+
+```
+
+Adding day of the week for email table
+```{r}
+# adding day of week 
+email$day_of_week[email$day == 1] = "Sunday"
+email$day_of_week[email$day == 2] = "Monday"
+email$day_of_week[email$day == 3] = "Tuesday"
+email$day_of_week[email$day == 4] = "Wednesday"
+email$day_of_week[email$day == 5] = "Thursday"
+email$day_of_week[email$day == 6] = "Friday"
+email$day_of_week[email$day == 7] = "Saturday"
+```
+
+
+Loading records of individual burn records 
+
+database connection no longer connects/connection has been changed for external publication
+```{r}
+#
+# connect to database 
+pass = rstudioapi::askForPassword("Database password")
+con_string = paste0(
+  "Driver=driver;DBQ=db;SVD=EXTRACTS;UID=username;PWD=",pass)
+# aces
+query_aces <- 'select * from ACES'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+aces_query = dbplyr::build_sql(dbplyr::sql(query_aces), con = con)
+aces = DBI::dbGetQuery(con, aces_query)
+# getting br
+aces_br = aces %>% group_by(statp) %>% 
+  summarise(
+            used = n_distinct(ID[auth_used == "U"& 
+                                (!is.na(authdate_audit) & !is.na(authdate_bank))]), 
+            total = n_distinct(ID), br = (used/total)*100 )
+aces_br$year = as.numeric(substr(aces_br$statp, 1, 4))
+aces_br$statp = "ACES"
+
+# arts
+query_arts <- 'select * from ARTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+arts_query = dbplyr::build_sql(dbplyr::sql(query_arts), con = con)
+arts = DBI::dbGetQuery(con, arts_query)
+# getting br
+arts_br = arts %>% group_by(statp) %>% 
+  summarise(
+            used = n_distinct(ID[auth_used == "U" & 
+                                (!is.na(authdate_audit) & !is.na(authdate_bank))]), 
+            total = n_distinct(ID), br = (used/total)*100 )
+arts_br$year = as.numeric(substr(arts_br$statp, 1, 4))
+arts_br$statp = "ARTS"
+
+# awts
+query_awts <- 'select * from AWTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+awts_query = dbplyr::build_sql(dbplyr::sql(query_awts), con = con)
+awts = DBI::dbGetQuery(con, awts_query)
+# getting br
+awts_br = awts %>% group_by(statp) %>% 
+  summarise(
+            used = n_distinct(ID[auth_used == "U" & 
+                                (!is.na(authdate_audit) & !is.na(authdate_bank))]), 
+            total = n_distinct(ID), br = (used/total)*100 )
+awts_br$year = as.numeric(substr(awts_br$statp, 1, 4))
+awts_br$statp = "AWTS"
+
+# sas
+query_sas <- 'select * from SAS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+sas_query = dbplyr::build_sql(dbplyr::sql(query_sas), con = con)
+sas = DBI::dbGetQuery(con, sas_query)
+# getting br
+sas_br = sas %>% group_by(statp) %>% 
+  summarise(
+            used = n_distinct(ID[auth_used == "U" & 
+                                (!is.na(authdate_audit) & !is.na(authdate_bank))]), 
+            total = n_distinct(ID), br = (used/total)*100 )
+sas_br$year = as.numeric(substr(sas_br$statp, 1, 4))
+sas_br$statp = "SAS"
+sas_br
+
+# cos/asm (kept in different data source)
+c17 = read.delim("Bank Authcode/COSASM_2017.dat", sep = "|")
+c18 = read.delim("Bank Authcode/COSASM_2018.dat", sep = "|")
+c19 = read.delim("Bank Authcode/COSASM_2019.dat", sep = "|")
+c20 = read.delim("Bank Authcode/COSASM_2020.dat", sep = "|")
+c21 = read.delim("Bank Authcode/COSASM_2021.dat", sep = "|")
+c22 = read.delim("Bank Authcode/COSASM_2022.dat", sep = "|")
+c_list =  lapply(c("c17", 'c18', 'c19', 'c20', 'c21', 'c22'), get)
+cosasm = do.call(rbind, c_list)
+names(cosasm)[names(cosasm) == "DATE"] = "AUTHDATE_BANK"
+cosasm$AUTH_USED = substr(cosasm$STATUS, 1, 1)
+cosasm$AUTHDATE_BANK <- as.Date(cosasm$AUTHDATE_BANK, format = "%d-%b-%Y")
+# getting br
+cosasm_br = cosasm %>% group_by(YEAR) %>% 
+  summarise(
+            used = n_distinct(COMPANYID[STATUS == "USED"]), 
+            total = n_distinct(COMPANYID), br = (used/total)*100 )
+cosasm_br$year = as.numeric(substr(cosasm_br$YEAR, 1, 4))
+cosasm_br$statp = "COS/ASM"
+cosasm_br = cosasm_br %>% select(c(statp, used, total, br, year))
+cosasm_br
+
+# m3ufo (kept in different data source)
+m17 = read.delim("Bank Authcode/M3UO14_2017.dat", sep = "|")
+m18 = read.delim("Bank Authcode/M3UO14_2018.dat", sep = "|")
+m19 = read.delim("Bank Authcode/M3UO14_2019.dat", sep = "|")
+m20 = read.delim("Bank Authcode/M3UO14_2020.dat", sep = "|")
+m21 = read.delim("Bank Authcode/M3UO14_2021.dat", sep = "|")
+m22 = read.delim("Bank Authcode/M3UO14_2022.dat", sep = "|")
+m_list =  lapply(c("m17", 'm18', 'm19', 'm20', 'm21', 'm22'), get)
+m3uo14 = do.call(rbind, m_list)
+m3uo14
+# calculating br
+m3_br =  m3uo14 %>% group_by(YEAR) %>% 
+  summarise(
+            used = n_distinct(COMPANYID[STATUS == "USED"]), 
+            total = n_distinct(COMPANYID), br = (used/total)*100 )
+m3_br$year = as.numeric(substr(m3_br$YEAR, 1, 4))
+m3_br$statp = "M3UFO"
+m3_br = m3_br %>% select(c(statp, used, total, br, year))
+m3_br
+
+# combining all the burn rates and adding them to survey table 
+br_list =  lapply(c("aces_br", 'awts_br', 'arts_br', 'm3_br', 'cosasm_br', 'sas_br'), get)
+br_data = do.call(rbind, br_list)
+br_data$ID =  paste(br_data$statp, br_data$year, sep = "_")
+br_data = br_data %>% select(-c(statp, year))
+br_data
+survey_br = merge(survey, br_data, by = "ID") 
+
+```
+
+# Code for altering com_more
+
+```{r}
+comm_survey = comm_survey %>%
+  group_by(survey_ID) %>%
+  mutate(days_past_last_comm = as.numeric(date - lag(date), unit = 'days'))
+
+comm_more = comm_survey %>% arrange(survey_ID, date) %>% group_by(survey_ID) %>%
+  mutate(days_past_last_comm = as.numeric(date - lag(date), unit = 'days'))
+
+comm_more = comm_more %>%
+  arrange(survey_ID, date) %>% group_by(survey_ID,com_type) %>%
+  mutate(days_past_same_comm = as.numeric(date - lag(date), unit = 'days')) 
+```
+
+```{r}
+# writing new csv for added variables to the tables (not all tables had extra variables added)
+write.csv(comm_more,"inputs/compendium updated/comm_more.csv", 
+          row.names = FALSE)
+write.csv(survey_br, "inputs/compendium updated/survey_more.csv",
+          row.names = FALSE)
+write.csv(call, 
+          "inputs/compendium updated/call_more.csv",
+          row.names = FALSE)
+write.csv(email, "inputs/compendium updated/email_more.csv", 
+          row.names = FALSE)
+write.csv(mail, "inputs/compendium updated/mail_more.csv", 
+          row.names = FALSE)
+write.csv(robo, "inputs/compendium updated/robo_more.csv", 
+          row.names = FALSE)
+```
+

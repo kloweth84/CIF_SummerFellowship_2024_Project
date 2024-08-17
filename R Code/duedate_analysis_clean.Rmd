@@ -1,0 +1,236 @@
+---
+title: "duedate_analysis_clean. Any opinions and conclusions expressed herein are those of the author(s) and do not reflect the views of the U.S. Census Bureau. The Census Bureau has reviewed this data product to ensure appropriate access, use, and disclosure avoidance protection of the confidential source data (Project No. P-7529180, Disclosure Review Board (DRB) approval number:  CBDRB-FY24-EWD001-007)"
+output: pdf_document
+date: "2024-07-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#loading packages
+
+```{r}
+library(tidyverse)
+library(haven)
+library(ggplot2)
+library(lubridate)
+library(DBI)
+library(dbplyr)
+library(odbc)
+
+```
+
+
+#loading files 
+
+file paths have been changed for external release and no longer work
+```{r}
+aces_stats = read.csv("inputs/auth_code_br_duedate/aces_daily_br.csv")
+sas_stats = read.csv("inputs/auth_code_br_duedate/sas_daily_br.csv")
+awts_stats = read.csv("inputs/auth_code_br_duedate/awts_daily_br.csv")
+arts_stats = read.csv("inputs/auth_code_br_duedate/arts_daily_br.csv")
+cosasm_stats = read.csv("inputs/auth_code_br_duedate/COSASM_daily_br.csv")
+
+comm = read.csv("inputs/compendium updated/comm_more.csv")
+survey = read.csv("inputs/compendium updated/survey_more.csv")
+email = read.csv("inputs/compendium updated/email_more.csv")
+mail = read.csv("inputs/compendium updated/mail_more.csv")
+```
+
+#fixing date variables so they are all in similar format and recognized as dates
+```{r}
+
+comm$date = as.Date(comm$date, format = "%Y-%m-%d")
+
+survey$open_date = as.Date(survey$open_date, format = "%Y-%m-%d")
+survey$due_date = as.Date(survey$due_date, format = "%Y-%m-%d")
+survey$close_date = as.Date(survey$close_date, format = "%Y-%m-%d" )
+
+email$send_date = as.Date(email$send_date, format = "%Y-%m-%d")
+mail$date = as.Date(mail$date, format = "%m/%d/%Y")
+
+aces_stats$AUTHDATE_BANK = as.Date(aces_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+arts_stats$AUTHDATE_BANK = as.Date(arts_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+awts_stats$AUTHDATE_BANK = as.Date(awts_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+sas_stats$AUTHDATE_BANK = as.Date(sas_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+cosasm_stats$AUTHDATE_BANK = as.Date(cosasm_stats$AUTHDATE_BANK, format = "%Y-%m-%d")
+
+```
+
+#creating variable for each survey 
+```{r}
+
+comm[c('Survey', 'Year')] <- str_split_fixed(comm$survey_ID, '_', 2)
+comm$com_type = toupper(comm$com_type)
+
+aces_stats$Survey = "ACES"
+awts_stats$Survey = "AWTS"
+arts_stats$Survey = "ARTS"
+cosasm_stats$Survey = "COS/ASM"
+sas_stats$Survey = "SAS"
+```
+
+#creating unique lists of communication dates and communication for each survey 
+```{r}
+
+aces_dates = unique(comm$date[comm$Survey == "ACES"])
+awts_dates = unique(comm$date[comm$Survey == "AWTS"])
+arts_dates = unique(comm$date[comm$Survey == "ARTS"])
+sas_dates = unique(comm$date[comm$Survey == "SAS"])
+cosasm_dates = unique(comm$date[comm$Survey == "COS/ASM"])
+
+
+comm_aces = comm[comm$Survey == "ACES",]
+comm_awts = comm[comm$Survey == "AWTS",]
+comm_arts = comm[comm$Survey == "ARTS",]
+comm_sas = comm[comm$Survey == "SAS",]
+comm_cosasm = comm[comm$Survey == "COS/ASM",]
+```
+
+#aggregating number sent for each com ID for mail and email and merging files with comm dataset
+```{r}
+#aggregating number sent for each com ID
+email_v2 = email %>% group_by(com_ID, send_date) %>% summarise(total_count = sum(n_sent))
+mail_v2 = mail %>% group_by(com_ID, date) %>% summarise(total_count = sum(n_sent))
+
+comm_email = merge(comm, email_v2 %>% select(c(com_ID, total_count)), by.x = "ID", by.y = "com_ID")
+comm_mail = merge(comm, mail_v2 %>% select(c(com_ID, total_count)), by.x = "ID", by.y = "com_ID")
+comm_email_mail = rbind(comm_email, comm_mail)
+```
+
+#merging survey data with communication data
+```{r}
+
+awts_stats_v2 = merge(awts_stats, comm_awts, by.x = "AUTHDATE_BANK", by.y = "date")
+aces_stats_v2 = merge(aces_stats, comm_aces, by.x = "AUTHDATE_BANK", by.y = "date")
+sas_stats_v2 = merge(sas_stats, comm_sas, by.x = "AUTHDATE_BANK", by.y = "date")
+arts_stats_v2 = merge(arts_stats, comm_arts, by.x = "AUTHDATE_BANK", by.y = "date")
+cosasm_stats_v2 = merge(cosasm_stats, comm_cosasm, by.x = "AUTHDATE_BANK", by.y = "date")
+
+```
+
+
+
+#plotting SAS auth code data over a few collection periods and overlaying dates of communication
+```{r}
+
+sas_within50DD = sas_stats %>% filter(abs(days_relative_duedate) <= 50)
+
+f1 = ggplot(sas_within50DD %>% filter(STATP00 %in% c("2017A1", "2020A1", "2022A1")), aes(x = days_relative_duedate, y = used_overall_ratio, colour = STATP00)) + geom_line(linewidth = 1) + ggtitle("Burn Ratio for SAS within 50 days of Due Date \n by Statistical Period") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75) 
+
+f1 + geom_point(data = sas_stats_v2 %>% filter(abs(days_relative_duedate) <= 50 & STATP00 %in% c("2017A1", "2020A1", "2022A1")), aes(x = days_relative_duedate, y = used_overall_ratio, colour = STATP00, shape = com_type), size = 4) + theme_minimal()
+```
+
+
+
+```{r}
+
+
+comm_colors <- c("MAIL" = "#0095A8", "CALL" = "#112E51", "EMAIL" = "#FF7043", "ROBOCALL" = "#78909C")
+survey_cols <- c("ACES" = "#26C6DA", "ARTS" = "#112E51", "AWTS" = "#FF7043", "COS/ASM" = "#78909C", "SAS" = "#2E78D2")
+
+f2 = ggplot(arts_within50DD %>% filter(STATP00 == "2022A1"), aes(x = days_relative_duedate, y = used_overall_ratio)) + geom_line(linewidth = 1, color = "#112E51") + ggtitle("Burn Ratio for ARTS 2022 within 50 days of Due Date") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75) 
+
+f2 + geom_point(data = arts_stats_v2 %>% filter(abs(days_relative_duedate) <= 50 & STATP00 == "2022A1" & com_type %in% c("MAIL", "EMAIL")), aes(x = days_relative_duedate, y = used_overall_ratio, colour = com_type, shape = com_type), size = 4) + scale_color_manual(values = comm_colors) + theme_minimal()
+
+
+```
+
+#binding all surveys together into one big dataset
+```{r}
+names(cosasm_stats)[names(cosasm_stats) == "YEAR"] <- "STATP00"
+allsurveys = rbind(awts_stats, arts_stats, aces_stats, sas_stats, cosasm_stats)
+  
+```
+
+#creating graphs that map the median values for all 5 surveys together
+```{r}
+median_use_DD = allsurveys %>% group_by(Survey, days_relative_duedate) %>%
+  summarise(median_usecount = median(count_used, na.rm = TRUE), median_useperc=median(used_overall_ratio, na.rm = TRUE))
+
+```
+```{r}
+median_within25DD = median_use_DD %>% filter(days_relative_duedate <= 25 & days_relative_duedate > -50)
+
+
+survey_cols <- c("ACES" = "#26C6DA", "ARTS" = "#112E51", "AWTS" = "#FF7043", "COS/ASM" = "#78909C", "SAS" = "#2E78D2")
+
+dd_median_br = ggplot(median_within25DD, aes(x = days_relative_duedate, y = median_useperc, colour = Survey)) + geom_line(linewidth = 0.75) + ggtitle("Authentication Code Burn Rate Peaks Near Due Date", subtitle = "75 Day Window (50 Days Before Due Date and 25 Days After)") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75) + scale_color_manual(values = survey_cols) + ylim(0,0.05) + theme_minimal() + xlab("Days Relative to Due Date") + ylab("Ratio of Daily Burn Rate to Sample Population")+ theme(text = element_text(size = 14))
+
+ggsave(filename = "Figures/due_date_median_br.png", plot = dd_median_br, width = 8, height = 6, units = "in")
+
+
+dd_median_usecount = ggplot(median_within25DD, aes(x = days_relative_duedate, y = median_usecount, colour = Survey)) + geom_line(linewidth = 1) + ggtitle("Authentication Code Use Peaks Near Survey Open Date \nand Near Due Date", subtitle = "75 Day Window (50 Days Before Due Date and 25 Days After)") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75) + scale_color_manual(values = survey_cols) + theme_minimal() + xlab("Days Relative to Due Date") + ylab("Median Number of Authentication Codes Burned")+ theme(text = element_text(size = 14))
+
+ggsave(filename = "Figures/due_date_median_usecount.png", plot = dd_median_usecount, width = 8, height = 6, units = "in")
+
+```
+
+###modeling
+
+
+#creating variables about communication's relation to due date and number of communications before and after due date
+#subsetting dataset to only include communication sent before due date
+```{r}
+
+survey_clean = survey[is.na(survey$n_burn_before_dd) == FALSE,]
+survey_comm = merge(survey_clean, comm_email_mail, by.x = "ID", by.y = "survey_ID") 
+survey_comm$days_rel_DD = as.numeric(difftime(survey_comm$due_date, survey_comm$date, units = "days"))
+#filtering out communication after due date and the small birth-month outreach efforts
+survey_comm_beforeDD = survey_comm %>% filter(days_rel_DD > 0)
+
+survey_comm_beforeDD_count = survey_comm_beforeDD %>% group_by(ID, per_burn_total_before_dd) %>% summarise(count = n())
+
+survey_comm_beforeDD$perc_comm = survey_comm_beforeDD$total_count / survey_comm_beforeDD$n_participants
+```
+
+#removing unnecessary variables
+```{r}
+
+survey_beforeDD2 = survey_comm_beforeDD %>% select(-c(feb_birth.x, feb_birth.y, may_birth.x, may_birth.y, august_birth.x, august_birth.y, total_count, ID.y, date, com_cat, days_past_open, days_past_last_comm, days_past_same_comm, final_ci, emails_used, soft_close))
+```
+
+#making a pivot wider so that all data related to particular survey collection period is in one row
+```{r}
+
+wide = survey_beforeDD2 %>% pivot_wider(names_from = c(com_type, message_type), values_from = c(perc_comm, days_rel_DD))
+wide
+```
+```{r}
+
+summary(wide$days_rel_DD_mail_initial)
+summary(wide$days_rel_DD_mail_DDR)
+summary(wide$days_rel_DD_email_DDR)
+summary(wide$days_rel_DD_email_initial)
+
+
+```
+
+
+# breaking open dates, due dates, and close dates into multiple variables.
+```{r}
+
+survey_early_counts_adj = survey_comm_beforeDD %>%
+  mutate(
+    open_month = month(open_date),       
+    open_day = day(open_date),           
+    open_weekday = wday(open_date)  ,
+    due_month = month(due_date),       
+    due_day = day(due_date),           
+    due_weekday = wday(due_date) ,
+    close_month = month(close_date),       
+    close_day = day(close_date),           
+    close_weekday = wday(close_date) 
+    
+  )
+
+```
+
+#creating a regression model that looks at relationship between communication sent before due date and burn rate by due date
+```{r}
+
+model1 = lm(per_burn_total_before_dd~days_rel_DD_mail_initial*perc_comm_mail_initial + days_rel_DD_mail_DDR*perc_comm_mail_DDR + days_rel_DD_email_DDR*perc_comm_email_DDR, data = wide)
+
+summary(model1)
+```

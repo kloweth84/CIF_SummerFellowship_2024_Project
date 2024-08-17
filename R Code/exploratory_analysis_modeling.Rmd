@@ -1,0 +1,1292 @@
+---
+title: "exploratory_analysis and modeling. Any opinions and conclusions expressed herein are those of the author(s) and do not reflect the views of the U.S. Census Bureau. The Census Bureau has reviewed this data product to ensure appropriate access, use, and disclosure avoidance protection of the confidential source data (Project No. P-7529180, Disclosure Review Board (DRB) approval number:  CBDRB-FY24-EWD001-007)"
+output: html_document
+date: "2024-08-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# loading packages
+```{r}
+library(tidyverse)
+library(haven)
+library(lubridate)
+library(ggplot2)
+library(DBI)
+library(stringr)
+library(vtable)
+```
+# loading data
+
+file paths have been changed for external release and no longer work
+```{r}
+comm = read_csv("inputs/compendium updated/comm_more.csv")
+comm
+survey = read_csv("inputs/compendium updated/survey_more.csv")
+survey
+email = read_csv("inputs/compendium updated/email_more.csv")
+mail = read_csv("inputs/compendium updated/mail_more.csv")
+comm_survey = merge(comm, survey, by.x = "survey_ID",by.y = "ID")
+comm_survey_clean = comm_survey[is.na(comm_survey$br) == FALSE,]
+comm_survey_v2 = comm_survey_clean %>% group_by(survey_ID, com_cat)
+
+comm_survey_agg_br = comm_survey %>% group_by(title,year, survey_ID) %>% 
+  summarise(total = n(), totalcommdist = n_distinct(com_cat, com_type), 
+            comm_beforedd = sum(date < due_date),n_mail = sum(com_type == 'mail'), 
+            n_email = sum(com_type == 'email'),
+            n_call = sum(com_type == 'call'), 
+            n_FU = sum(message_type == 'FU'), n_DDR =sum(message_type == 'DDR'),  
+            n_UAA =sum(message_type == 'UAA'), n_UER =sum(message_type == 'UER'))
+comm_survey_agg_br
+survey
+# adding back in burn rate
+comm_survey_agg = merge(comm_survey_agg_br,  survey %>% select(c(ID, br,per_burn_used_before_dd, per_burn_total_before_dd)),
+      by.x = "survey_ID", by.y = "ID")
+```
+
+```{r}
+# filter out comm methods which occured before the due date
+comm_after_due = comm_survey %>% group_by(survey_ID)
+comm_counts = comm_survey %>% group_by(title, year) %>% 
+  summarise(n_comm = n(com_cat), )
+comm_after_due_counts
+```
+
+# loading in individual burn records
+
+database connection no longer connects/connection has been changed for external publication
+```{r}
+pass = rstudioapi::askForPassword("Database password")
+con_string = paste0(
+  "Driver=driver;DBQ=db;SVD=EXTRACTS;UID=username;PWD=",pass)
+ 
+query_aces <- 'select * from ACES'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+aces_query = dbplyr::build_sql(dbplyr::sql(query_aces), con = con)
+aces = DBI::dbGetQuery(con, aces_query)
+
+# arts
+query_arts <- 'select * from ARTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+arts_query = dbplyr::build_sql(dbplyr::sql(query_arts), con = con)
+arts = DBI::dbGetQuery(con, arts_query)
+
+# awts
+query_awts <- 'select * from AWTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+awts_query = dbplyr::build_sql(dbplyr::sql(query_awts), con = con)
+awts = DBI::dbGetQuery(con, awts_query)
+
+# sas
+query_sas <- 'select * from SAS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+sas_query = dbplyr::build_sql(dbplyr::sql(query_sas), con = con)
+sas = DBI::dbGetQuery(con, sas_query)
+
+# cos
+c17 = read.delim("Bank Authcode/COSASM_2017.dat", sep = "|")
+c18 = read.delim("Bank Authcode/COSASM_2018.dat", sep = "|")
+c19 = read.delim("Bank Authcode/COSASM_2019.dat", sep = "|")
+c20 = read.delim("Bank Authcode/COSASM_2020.dat", sep = "|")
+c21 = read.delim("Bank Authcode/COSASM_2021.dat", sep = "|")
+c22 = read.delim("Bank Authcode/COSASM_2022.dat", sep = "|")
+c_list =  lapply(c("c17", 'c18', 'c19', 'c20', 'c21', 'c22'), get)
+cosasm = do.call(rbind, c_list)
+names(cosasm)[names(cosasm) == "DATE"] = "AUTHDATE_BANK"
+cosasm$AUTH_USED = substr(cosasm$STATUS, 1, 1)
+cosasm$AUTHDATE_BANK <- as.Date(cosasm$AUTHDATE_BANK, format = "%d-%b-%Y")
+
+```
+
+
+# visualization of communication over the years 
+```{r}
+# types of messages 
+p_ncomm = ggplot(comm_survey_agg %>% filter( title!= "M3UFO") , 
+       aes(x = year, y = totalcommdist, color = title)) +
+  labs(x = "Survey Years", y = "Max Number of Communication Attempts", color = "Survey") +
+  ggtitle("Number of Max Communication Attempts Increases Over the Years")  +
+  theme_minimal()+
+  scale_color_manual(values = c("ACES" = "#26C6DA", "ARTS" = "#112E51", "AWTS" = "#FF7043",
+                    "SAS" = "#2E78D2","COS/ASM" = "#78909C", "M3UFO" = '#FFBEA9')) +
+  theme(text = element_text(size = 14),  panel.grid.minor = element_blank()) + xlim(2015, 2022) + ylim(0, 25) + 
+  scale_x_continuous(
+    breaks = seq(from = min(comm_survey_agg$year), to = max(comm_survey_agg$year), by = 1)
+  ) + geom_line(position=position_dodge(width=0.4), size=1)
+p_ncomm
+
+ggsave(filename = "Figures/p_ncomm.png", plot = p_ncomm, width = 8, height = 6, units = "in")
+```
+
+# visualization of burn rate and communication
+```{r}
+# br against n comm 
+comm_with_br = comm_survey %>% filter(title!= "M3UFO") %>%
+  group_by(title, year, br, per_burn_total_before_dd) %>% summarise(n_comm = n_distinct(com_cat, com_type)) %>% 
+  na.omit() %>%
+  pivot_longer(cols = c("per_burn_total_before_dd", "br"), names_to = "Type", values_to = "Values")
+comm_with_br
+# change color 
+br_vs_ncomm = ggplot(data = comm_with_br,aes(x = n_comm, y = Values, color = Type)) + geom_point() + 
+  geom_smooth(method = 'lm', se = FALSE)+
+  theme_minimal()  +   labs(x = "Maximum Number of Communication Attempts", y = "Percent", 
+                title = "Burn Rate Not Correlated with \nMaximum Number of Communication Attempts")+ 
+  theme(panel.grid.minor = element_blank()) +
+  scale_color_manual(values = c("br" = "#FF7043", "per_burn_total_before_dd" = "#006C7A"),
+                     labels = c("br" = "Burn Rate by Closeout Date", 
+                                "per_burn_total_before_dd" = "Burn Rate By Due Date")) + 
+  theme(legend.position = c(0.22, 0.2)) + xlim(0, 25) + ylim(0, 85)+ theme(text = element_text(size = 14))
+  
+br_vs_ncomm
+ggsave(filename = "Figures/br_vs_ncomm.png", plot = br_vs_ncomm, width = 6, height = 6, units = "in")
+
+```
+
+```{r}
+
+comm_survey = merge(comm, survey, by.x = "survey_ID",by.y = "ID")
+comm_survey_clean = comm_survey[is.na(comm_survey$br) == FALSE,]
+
+comm_survey_agg = comm_survey_clean %>% group_by(survey_ID, br, per_burn_total_before_dd) %>% summarise(total = n(), totalcommdist = n_distinct(com_cat, com_type), comm_beforedd = sum(date < due_date))
+
+br_vs_ncomm_2 = ggplot() + geom_point(data = comm_survey_agg, aes(x = totalcommdist, y = br, color = "#FF7043")) + geom_smooth(data = comm_survey_agg,aes(x = totalcommdist, y = br, color = "#FF7043"), method = 'lm', se = FALSE) +
+  theme_minimal()  +   labs(x = "Maximum Communication Attempts", y = "Percent", 
+                            title = "Burn Rate and Max Communication Attempts\nat Due Date and Closeout Date", subtitle = "Each Dot Represents a Collection Period for a Survey")+ theme(panel.grid.minor = element_blank()) + geom_point(data = comm_survey_agg, aes(x = comm_beforedd, y = per_burn_total_before_dd, color =  "#006C7A")) + geom_smooth(data = comm_survey_agg, aes(x = comm_beforedd, y = per_burn_total_before_dd, color =  "#006C7A"), method = 'lm', se = FALSE) + scale_color_manual('Type', values = c("#006C7A", "#FF7043"), guide = guide_legend(reverse = TRUE)) +
+  guides(colour = guide_legend(override.aes = list(pch = c(21, 21), fill = c("#006C7A", "#FF7043"))), guide = guide_legend(reverse = TRUE)) +
+  scale_color_manual("Type", labels = c("Burn Rate by Due Date", "Burn Rate by Closeout Date"), values = c("#006C7A", "#FF7043")) + theme(legend.position = c(0.75, 0.18)) + xlim(0, 25) + ylim(0, 85)+ theme(text = element_text(size = 14))
+                    
+
+br_vs_ncomm_2
+
+ggsave(filename = "Figures/br_vs_ncomm_v2.png", plot = br_vs_ncomm_2, width = 6, height = 6, units = "in")
+
+```
+
+```{r}
+comm_survey_agg_long =comm_survey_agg %>% pivot_longer(cols = c("per_burn_total_before_dd", "br"), names_to = "Type", values_to = "Values")
+
+br_vs_ncomm_due = ggplot(data = comm_survey_agg_long %>% filter(Type=='br'),
+                         aes(x = comm_beforedd, y = Values, color = Type)) + geom_point(color = "#006C7A") + 
+  geom_smooth(method = 'lm', se = FALSE, color= "#006C7A")+
+  theme_minimal()  +   labs(x = "Maximum Number of Communication Attempts by Due Date", y = "Percent", 
+                title = "Range of Maximum Number of Communication Attempts\nBy Due Date is Limited and Correlated with Burn Rate")+ 
+  theme(panel.grid.minor = element_blank())  + 
+  theme(legend.position = c(0.22, 0.2)) + xlim(0, 25) + ylim(0, 85)+ theme(text = element_text(size = 14))
+  
+br_vs_ncomm_due
+
+br_vs_ncomm_close = ggplot(data = comm_survey_agg_long %>% filter(Type=='br'),aes(x = totalcommdist, y = Values)) + 
+  geom_point(color = "#FF7043") + 
+  geom_smooth(method = 'lm', se = FALSE, color = "#FF7043")+
+  theme_minimal()  +   labs(x = "Maximum Number of Communication Attempts by Close Date", y = "Percent", 
+                title = "Burn Rate Not Correlated with \nMaximum Number of Communication Attempts by Close Date")+ 
+  theme(panel.grid.minor = element_blank()) +
+  theme(legend.position = c(0.22, 0.2)) + xlim(0, 25) + ylim(0, 85)+ theme(text = element_text(size = 14))
+br_vs_ncomm_close
+
+ggsave(filename = "Figures/br_vs_ncomm_due.png", 
+       plot = br_vs_ncomm_due, width = 8, height = 6, units = "in")
+ggsave(filename = "Figures/br_vs_ncomm_close.png",
+       plot = br_vs_ncomm_close, width = 8, height = 6, units = "in")
+```
+
+# looking at message type frequency
+# uaa/uer with com type
+```{r}
+comm_survey %>% filter(message_type == 'UAA'|message_type=="UER") 
+```
+
+```{r}
+# line graph with percentage
+df_uaa_uer = survey  %>% filter(title!="M3UFO") %>%  group_by(year) %>% 
+  summarise(uaa_per = mean(uaa_used==1)*100, uer_per = mean(uer_used==1)*100)%>%
+  pivot_longer(cols = c('uaa_per', 'uer_per'), names_to = "Variable", values_to = "Value")
+df_uaa_uer
+p_uaa_uer = ggplot(df_uaa_uer, aes(x = year,y = Value,  group = Variable, color = Variable, linetype = Variable)) +
+  geom_line(size = 0.9) +
+  labs(x = "Year", y = "Percent",
+       title = "All surveys began using UER and UAA Communication\nfor 2019 and 2020 Survey Years") +
+  theme_minimal() +
+  scale_color_manual(values = c("uer_per" = "#FF7043", "uaa_per" = "#2E78D2"),
+                     labels = c("uer_per" = "% of Surveys which use UER Communication", 
+                                "uaa_per" = "% of Surveys which use UAA Communication")) +
+  scale_linetype_manual(values = c("uer_per" = "dashed", "uaa_per" = "solid"))+
+  guides(
+    color = guide_legend(order = 1),  # Show the color legend
+    linetype = "none"                 # Hide the line type legend
+  ) +   scale_x_continuous(breaks = 2015:2022)
+p_uaa_uer
+ggsave(filename = "Figures/p_uaa_uer.png", 
+       plot = p_uaa_uer, width = 8, height = 6, units = "in")
+```
+
+# graph for introduction of email
+```{r}
+comm_survey
+emails_included = comm_survey %>% group_by(survey_ID, year) %>% 
+  summarise(e_email = sum(com_type=="email")) %>% 
+  summarise(email_included = (e_email>0)) 
+
+email_included_long = merge(emails_included, survey, by.x = 'survey_ID', by.y = 'ID') %>% group_by(year) %>% 
+  summarise(email_per = mean(email_included=="TRUE")*100)
+
+p_email_included = ggplot(email_included_long, aes(x = year,y = email_per)) +
+  geom_line(size = 1, color = '#78909C') +
+  labs(x = "Year", y = "Percent",
+       title = "All surveys began using Email Communication in Survey Year 2017") +
+  theme_minimal() + scale_x_continuous(breaks = 2015:2022)
+
+p_email_included
+ggsave(filename = "Figures/p_email_included.png", 
+       plot = p_email_included, width = 8, height = 6, units = "in")
+```
+
+# visualization for early and overall burn rate
+```{r}
+# br and early br for 
+p_ebr_br_awts = ggplot(data = survey %>% filter(title=='AWTS') %>%
+                    pivot_longer(cols = c("per_burn_total_before_dd", "br"), names_to = "Type", values_to = "Values"),
+       aes(x = year, y = Values, group = Type, color = Type)) + geom_line(size = 1) + xlim(2017, 2022) + theme_minimal() + 
+  theme(panel.grid.minor = element_blank()) + 
+   scale_color_manual(values = c("per_burn_total_before_dd" = "#006C7A", "br" = "#FF7043"),
+                     labels = c("per_burn_total_before_dd" = "Burn Rate by Due Date", "br" = "Burn Rate by Closeout Date"), guide = guide_legend(reverse = TRUE))  + 
+  labs(x = " Survey Years", y = "Percent", 
+       title = "Burn Rate by Due Date and Burn Rate by Closeout \nfrom 2017 to 2022",
+       subtitle = "Annual Wholesale Trade Survey") +
+  scale_color_manual(values = c("per_burn_total_before_dd" = "#006C7A", "br" = "#FF7043"),
+                     labels = c("per_burn_total_before_dd" = "Burn Rate by Due Date", "br" = "Burn Rate by Closeout Date"), guide = guide_legend(reverse = TRUE)) + 
+  ylim(0,90 ) + theme(text = element_text(size = 14)) + theme(legend.position = c(0.75, 0.2))
+p_ebr_br_awts
+# saving with diff dim
+ggsave(filename = "Figures/awts_br.png", plot = p_ebr_br_awts,
+       units = "in",width = 7, height = 6)
+ggsave(filename = "Figures/aces_br_report.png", plot =
+         p_ebr_br,
+       units = "in",width = 7, height = 6)
+```
+
+# check in rate vs burn rate 
+```{r}
+# fixing ci for final ci
+
+ci_fixed = survey %>%
+  separate_rows(final_ci, sep = "/") %>%group_by(ID) %>%
+  mutate(new_id = row_number(), title = if_else(new_id == 1,title, "ASM")) %>% select(c(ID, title, year, final_ci, br)) %>% na.omit() 
+
+ci_fixed$final_ci = ci_fixed$final_ci %>% as.numeric()
+ggplot(data = ci_fixed, aes(x = br, y = final_ci, color = title)) + geom_point() 
+
+ci_fixed$final_ci = ci_fixed$final_ci %>% as.numeric()
+ggplot(data = ci_fixed, aes(x = br, y = final_ci, color = title)) + geom_point() + facet_wrap(~title)
+```
+# put in report 
+```{r}
+ci_fixed_longer = ci_fixed %>% pivot_longer(cols = c("br", "final_ci"), names_to = "Type", values_to = "Value")
+
+p_ci_br = ggplot(data = ci_fixed_longer, aes(x = year, y = Value, group = Type, color = Type)) + geom_line() + 
+  facet_wrap(~title,  labeller = labeller(title = c("ACES"='ACES', 'ARTS'='ARTS','ASM'='ASM (2018-2021)',
+                                          'COS/ASM'='COS (2018-2021)', 'AWTS'='AWTS','SAS'='SAS')))+
+  scale_color_manual(values = c("br" = "#FF7043", "final_ci" = "#006C7A"),
+                     labels = c("br" = "Burn Rate (%)", "final_ci" = "Final Check-In Rate (%)")) + theme_minimal() + 
+  labs(x = "Year (2017-2022)", y = "Percent", title = "Burn Rate and Check-In Rate Over the Years") +
+  theme(plot.title = element_text(hjust = 0.5), panel.grid.minor = element_blank(),axis.text.x = element_blank())
+
+p_ci_br
+ggsave(filename = "Figures/p_ci_br.png", 
+       plot = p_ci_br, width = 8, height = 4, units = "in")
+```
+
+```{r}
+table(ddr_nobirth$days_before_due) # look at distribution 
+
+survey_ddr = merge(survey, ddr_nobirth %>% group_by(survey_ID) %>% summarise(median_days_before_due = median(days_before_due)), 
+      by.x = "ID", by.y = "survey_ID")
+survey_ddr
+
+survey_ddr_longer = survey_ddr %>% pivot_longer(cols = c("median_days_before_due", "per_burn_used_before_dd", 
+"per_burn_total_before_dd", "br"), 
+                                                names_to = "Type", values_to = "Value") %>% filter(year>2016)
+survey_ddr_longer
+```
+
+
+
+# Getting # of people who burned before vs after the due date 
+```{r}
+comm_survey
+```
+
+
+
+```{r}
+pass = rstudioapi::askForPassword("Database password")
+con_string = paste0(
+  "Driver=driver;DBQ=db;SVD=EXTRACTS;UID=username;PWD=",pass)
+ 
+query_aces <- 'select * from ACES'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+aces_query = dbplyr::build_sql(dbplyr::sql(query_aces), con = con)
+aces = DBI::dbGetQuery(con, aces_query)
+# arts
+query_arts <- 'select * from ARTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+arts_query = dbplyr::build_sql(dbplyr::sql(query_arts), con = con)
+arts = DBI::dbGetQuery(con, arts_query)
+# awts
+query_awts <- 'select * from AWTS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+awts_query = dbplyr::build_sql(dbplyr::sql(query_awts), con = con)
+awts = DBI::dbGetQuery(con, awts_query)
+# sas
+query_sas <- 'select * from SAS'
+con = dbConnect(odbc::odbc(), .connection_string = con_string, timeout = 10)
+sas_query = dbplyr::build_sql(dbplyr::sql(query_sas), con = con)
+sas = DBI::dbGetQuery(con, sas_query)
+head(aces)
+head(arts)
+head(awts)
+head(sas)
+```
+
+```{r}
+before_after_dd = function(auth_code_df, survey_name){
+  auth_code_data = auth_code_df %>% filter(AUTH_USED == "U") %>% 
+    select(c(STATP, AUTHDATE_BANK)) %>% na.omit()
+  auth_code_data$AUTHDATE_BANK = as.Date(auth_code_data$AUTHDATE_BANK)
+  auth_code_data$year = as.numeric(substr(auth_code_data$STATP, 1, 4))
+
+  merged = merge(auth_code_data, survey %>% filter(substr(ID, 1, 4) == survey_name), by = 'year')
+
+  merged_with_counts = merged %>% 
+    group_by(ID) %>% 
+    filter(AUTHDATE_BANK <= due_date) %>% 
+    summarise(n_burn_before_dd =   n())
+  before_after = merge( survey %>% filter(substr(ID, 1, 4) == survey_name), merged_with_counts, by = "ID")
+  before_after$n_burn_after_dd = before_after$used - before_after$n_burn_before_dd 
+  before_after$per_burn_before_dd = before_after$n_burn_before_dd/before_after$used
+  return(before_after)
+}
+
+aces_more_br = before_after_dd(aces, "ACES")
+awts_more_br = before_after_dd(awts, "AWTS")
+arts_more_br = before_after_dd(arts, "ARTS")
+sas_more_br = before_after_dd(sas, "SAS_")
+aces_more_br
+awts_more_br
+arts_more_br
+sas_more_br
+```
+```{r}
+c17 = read.delim("Bank Authcode/COSASM_2017.dat", sep = "|")
+c18 = read.delim("Bank Authcode/COSASM_2018.dat", sep = "|")
+c19 = read.delim("Bank Authcode/COSASM_2019.dat", sep = "|")
+c20 = read.delim("Bank Authcode/COSASM_2020.dat", sep = "|")
+c21 = read.delim("Bank Authcode/COSASM_2021.dat", sep = "|")
+c22 = read.delim("Bank Authcode/COSASM_2022.dat", sep = "|")
+c_list =  lapply(c("c17", 'c18', 'c19', 'c20', 'c21', 'c22'), get)
+cosasm = do.call(rbind, c_list)
+
+names(cosasm)[names(cosasm) == "DATE"] = "AUTHDATE_BANK"
+names(cosasm)[names(cosasm) == "YEAR"] = "STATP"
+cosasm$AUTH_USED = substr(cosasm$STATUS, 1, 1)
+cosasm$AUTHDATE_BANK <- as.Date(cosasm$AUTHDATE_BANK, format = "%d-%b-%Y")
+
+cosasm
+```
+
+```{r}
+cosasm_more_br = before_after_dd(cosasm, "COS/")
+cosasm_more_br
+```
+
+```{r}
+m17 = read.delim("Bank Authcode/M3UO14_2017.dat", sep = "|")
+m18 = read.delim("Bank Authcode/M3UO14_2018.dat", sep = "|")
+m19 = read.delim("Bank Authcode/M3UO14_2019.dat", sep = "|")
+m20 = read.delim("Bank Authcode/M3UO14_2020.dat", sep = "|")
+m21 = read.delim("Bank Authcode/M3UO14_2021.dat", sep = "|")
+m22 = read.delim("Bank Authcode/M3UO14_2022.dat", sep = "|")
+m_list =  lapply(c("m17", 'm18', 'm19', 'm20', 'm21', 'm22'), get)
+m3uo14 = do.call(rbind, m_list)
+m3uo14
+names(m3uo14)[names(m3uo14) == "DATE"] = "AUTHDATE_BANK"
+m3uo14$AUTH_USED = substr(m3uo14$STATUS, 1, 1)
+names(m3uo14)[names(m3uo14) == "YEAR"] = "STATP"
+m3uo14$AUTHDATE_BANK <- as.Date(m3uo14$AUTHDATE_BANK, format = "%d-%b-%Y")
+
+m3uo14
+```
+```{r}
+m3uo14_more_br = before_after_dd(m3uo14, "M3UF")
+m3uo14_more_br
+```
+
+```{r}
+more_br = rbind(aces_more_br, awts_more_br, arts_more_br, sas_more_br, cosasm_more_br, m3uo14_more_br)
+more_br
+```
+```{r}
+survey_more_br = merge(survey, more_br, by = "ID", all = TRUE)[, c(1:16, 32:38)]
+names(survey_more_br) = names(more_br)
+survey_more_br
+```
+
+```{r}
+survey = read_csv(inputs/survey.csv")
+merge(survey, more_br, by = "ID", all = TRUE)
+```
+
+
+```{r}
+# adjusting columns
+survey_more_br$per_burn_used_before_dd = (survey_more_br$n_burn_before_dd / survey_more_br$used) * 100
+survey_more_br$per_burn_total_before_dd =( survey_more_br$n_burn_before_dd / survey_more_br$total) * 100
+survey_more_br = survey_more_br %>% select(-per_burn_before_dd)
+survey_more_br
+```
+```{r}
+#write.csv(survey_more_br, 
+          "inputs/compendium updated/survey_more.csv",
+          row.names = FALSE)
+```
+
+```{r}
+survey = read_csv("inputs/compendium updated/survey_more.csv")
+survey
+```
+```{r}
+survey %>% select(c(ID, br,per_burn_used_before_dd)) %>% arrange(desc(per_burn_used_before_dd))
+```
+
+
+
+# visualization for ddr and burn rate
+```{r}
+plot_ddr = function(survey_name){
+  ggplot(data = survey_ddr_longer %>% filter(title==survey_name & 
+          ((Type == "median_days_before_due" | Type == "per_burn_total_before_dd"))), 
+         aes(x = year, y = Value, group = Type, color = Type)) + geom_line()+ theme_minimal() + 
+    labs(x = "Year", color = "Legend", title = survey_name) +
+    scale_x_continuous(breaks = survey_ddr_longer$year)+
+    scale_color_manual(values = c("median_days_before_due" = "#FFBEA9", "per_burn_total_before_dd" = "#006C7A"),
+                     labels = c("median_days_before_due" = "Median Days Before Due Date", "per_burn_total_before_dd" = "Early Burn Rate"))
+}
+# possible that 
+plot_ddr("ACES")
+plot_ddr("ARTS")
+plot_ddr("AWTS")
+plot_ddr("SAS")
+plot_ddr("COS/ASM")
+
+
+
+```
+```{r}
+p_ddr_aces = ggplot(data = survey_ddr_longer %>% filter(title=="ACES" & 
+          ((Type == "median_days_before_due" | Type == "per_burn_total_before_dd"))), 
+         aes(x = year, y = Value, group = Type, color = Type)) + geom_line()+ theme_minimal() + 
+    labs(x = "Year", color = "Legend", title = "ACES") +
+    scale_x_continuous(breaks = survey_ddr_longer$year)+
+    scale_color_manual(values = c("median_days_before_due" = "#FFBEA9", "per_burn_total_before_dd" = "#006C7A"),
+                       labels = c("median_days_before_due" = "Median Days Before Due Date", "per_burn_total_before_dd" = 
+                                    " Burn Rate by Due Date")) +
+  theme(legend.position = c(0.8, 0.3), plot.title = element_text(hjust = 0.5), panel.grid.minor = element_blank())
+
+p_ddr_aces
+
+#ggsave(filename = "p_ddr_aces.png", 
+     #  plot = p_ddr_aces, width = 8, height = 6, units = "in")
+```
+
+# included in presentation
+```{r}
+p_ddr_ebr = ggplot(data =ddr_nobirth %>% select(c(per_burn_total_before_dd, days_before_due, title, com_type)) %>% na.omit(),
+       aes(x = days_before_due, y = per_burn_total_before_dd, color= com_type)) + geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(values = c("email" = "#FFBEA9", "mail" = "#006C7A"),
+                     labels = c("email" = "Email", "mail" = "Mail")) + 
+  labs(x = "Number of Days Before Due Date", y = "% of Codes Burned by Due Date", color = "Communication Type",
+       title = "Burn Rate increases with Number of Days \nbefore Due Date a Due Date Reminder is sent") +
+  theme_minimal() + 
+  theme(legend.position = c(0.15, 0.85)) + xlim(0, 20) + ylim(0, 60) + theme(text = element_text(size = 14))
+p_ddr_ebr
+ggsave(filename = "Figures/p_ddr_ebr.png", 
+      plot = p_ddr_ebr, width = 8, height = 6, units = "in")
+```
+
+# analysis of day of the week 
+
+#email DOW analysis
+```{r}
+comm[c('Survey', 'Year')] <- str_split_fixed(comm$survey_ID, '_', 2)
+comm15to22 = comm %>% filter(Year == "2015" | Year == "2022")
+  
+comcatcount15to22 = comm15to22 %>% group_by(survey_ID, Year) %>% summarise(comcatcount = n_distinct(com_cat, com_type))  
+mean(comcatcount15to22$comcatcount[comcatcount15to22$Year == "2015"])
+mean(comcatcount15to22$comcatcount[comcatcount15to22$Year == "2022"])
+
+mean(comcatcount15to22$comcatcount[comcatcount15to22$Year == "2022"]) / mean(comcatcount15to22$comcatcount[comcatcount15to22$Year == "2015"])
+```
+
+```{r}
+#changing the order of the DOW variable so that it is in the correct sequential order
+days_of_week = unique(email$day_of_week)
+days_of_week
+
+email$day_of_week = factor(email$day_of_week , levels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
+
+table(email$day_of_week)
+table(email$survey_ID, email$day_of_week)
+```
+
+```{r}
+#merging email and communication dataset
+
+email_comm = merge(email, comm, by.x = "com_ID", by.y = "ID")
+email_comm$message_type = toupper(email_comm$message_type)
+email_comm[c('Survey', 'Year')] <- str_split_fixed(email_comm$survey_ID.x, '_', 2)
+
+table(email_comm$message_type)
+table(email_comm$message_type, email_comm$day_of_week)
+table(email_comm$Year, email_comm$day_of_week)
+table(email_comm$Survey, email_comm$day_of_week)
+```
+
+```{r}
+#filtering data to only look at the use cases in the survey dataset
+awts_usecount = awts %>% filter(is.na(AUTHDATE_BANK) == FALSE & X_ASTAT00 %in% c("E", "U")) %>% group_by(AUTHDATE_BANK) %>% summarise(usecount = n())
+arts_usecount = arts %>% filter(is.na(AUTHDATE_BANK) == FALSE & X_ASTAT00 %in% c("E", "U")) %>% group_by(AUTHDATE_BANK) %>% summarise(usecount = n())
+aces_usecount = aces %>% filter(is.na(AUTHDATE_BANK) == FALSE & X_ASTAT00 %in% c("E", "U")) %>% group_by(AUTHDATE_BANK) %>% summarise(usecount = n())
+sas_usecount = sas %>% filter(is.na(AUTHDATE_BANK) == FALSE & X_ASTAT00 %in% c("E", "U")) %>% group_by(AUTHDATE_BANK) %>% summarise(usecount = n())
+cosasm_usecount = cosasm %>% filter(is.na(AUTHDATE_BANK) == FALSE & AUTH_USED %in% c("E", "U")) %>% group_by(AUTHDATE_BANK) %>% summarise(usecount = n())
+
+```
+
+```{r}
+#reformatting date variable
+email_daytotal$date = as.Date(email_daytotal$date, format = "%Y-%m-%d")
+
+```
+
+```{r}
+
+
+awts_email = email_daytotal %>% filter(Survey == "AWTS")
+aces_email = email_daytotal %>% filter(Survey == "ACES")
+arts_email = email_daytotal %>% filter(Survey == "ARTS")
+sas_email = email_daytotal %>% filter(Survey == "SAS")
+cosasm_email = email_daytotal %>% filter(Survey == "COS/ASM")
+
+#creating list of email dates for each survey
+awts_email_dates = unique(awts_email$date)
+arts_email_dates = unique(arts_email$date)
+aces_email_dates = unique(aces_email$date)
+sas_email_dates = unique(sas_email$date)
+cosasm_email_dates = unique(cosasm_email$date)
+
+#subsetting data so that it only includes dates that we know an email was sent
+awts_emaildates_use = awts_usecount %>% filter(AUTHDATE_BANK %in% awts_email_dates)
+arts_emaildates_use = arts_usecount %>% filter(AUTHDATE_BANK %in% arts_email_dates)
+aces_emaildates_use = aces_usecount %>% filter(AUTHDATE_BANK %in% aces_email_dates)
+sas_emaildates_use = sas_usecount %>% filter(AUTHDATE_BANK %in% sas_email_dates)
+cosasm_emaildates_use = cosasm_usecount %>% filter(AUTHDATE_BANK %in% cosasm_email_dates)
+
+#!awts_email_dates %in% unique(awts_emaildates_use$authdate_bank)
+
+```
+
+```{r}
+#merging dataset
+awts_DOW = merge(awts_email, awts_emaildates_use, by.x = "date", by.y = "AUTHDATE_BANK", all.x = TRUE)
+arts_DOW = merge(arts_email, arts_emaildates_use, by.x = "date", by.y = "AUTHDATE_BANK", all.x = TRUE)
+aces_DOW = merge(aces_email, aces_emaildates_use, by.x = "date", by.y = "AUTHDATE_BANK", all.x = TRUE)
+sas_DOW = merge(sas_email, sas_emaildates_use, by.x = "date", by.y = "AUTHDATE_BANK", all.x = TRUE)
+cosasm_DOW = merge(cosasm_email, cosasm_emaildates_use, by.x = "date", by.y = "AUTHDATE_BANK", all.x = TRUE)
+
+```
+
+
+```{r}
+#calculating a percentage of the use count
+awts_DOW$useperc = (awts_DOW$usecount / awts_DOW$totalcount) * 100
+arts_DOW$useperc = (arts_DOW$usecount / arts_DOW$totalcount) * 100
+aces_DOW$useperc = (aces_DOW$usecount / aces_DOW$totalcount) * 100
+sas_DOW$useperc = (sas_DOW$usecount / sas_DOW$totalcount) * 100
+cosasm_DOW$useperc = (cosasm_DOW$usecount / cosasm_DOW$totalcount) * 100
+
+```
+
+# Visualizations
+```{r}
+#visualization of AWTS emails use count vs total count
+ggplot(awts_DOW, aes(x=totalcount, y=usecount, colour = day_of_week)) + geom_point(size = 2) + ggtitle("AWTS Emails Sent vs Use Count, by Day of Week") + theme_minimal()
+
+ggplot(awts_DOW[awts_DOW$useperc < 100,], aes(x=totalcount, y=useperc, colour = day_of_week)) + geom_point(size = 2) + ggtitle("AWTS Emails Sent vs Use Percentage, by Day of Week") + theme_minimal()
+
+ggplot(cosasm_DOW[cosasm_DOW$useperc < 100,], aes(x = day_of_week, y = useperc)) + geom_boxplot() + ggtitle("Use Percentage Distribution by Day of Week for COS/ASM (2017-2022)")
+```
+
+```{r}
+#visualization of emails across all surveys for use count vs use percentage
+allemailcounts = rbind(arts_DOW, cosasm_DOW, aces_DOW, sas_DOW, awts_DOW)
+allemailcounts[is.na(allemailcounts)] <- 0
+
+ggplot(allemailcounts[allemailcounts$useperc < 200,], aes(x=usecount, y=useperc, colour = Survey)) + scale_color_manual(values = cols) + geom_point() + theme_minimal()
+allemailcounts$date = as.Date(allemailcounts$date, format = "%Y-%m-%d")
+
+```
+
+```{r}
+#regression modeling to look at effect of day of week on use percentage
+DOW_reg = lm(data = allemailcounts, useperc~as.factor(day_of_week) + totalcount + as.factor(Year) + as.factor(Survey))
+summary(DOW_reg)
+
+DOW_reg2 = lm(data = allemailcounts, useperc~as.factor(day_of_week)*as.factor(Survey) + as.factor(Year) + totalcount)
+summary(DOW_reg2)
+```
+
+
+```{r}
+#creating regression models that look at relationship between days of week and days relative to due date and use percentage
+survey_email_DOW = merge(survey, allemailcounts, by.x = "ID", by.y = "survey_ID.x") 
+
+survey_email_DOW$days_rel_DD = abs(as.numeric(difftime(survey_email_DOW$due_date, survey_email_DOW$date, units = "days")))
+
+DOW_reg3 = lm(data = survey_email_DOW, useperc~as.factor(day_of_week) + totalcount + days_rel_DD + as.factor(Year) + as.factor(Survey))
+summary(DOW_reg3)
+
+DOW_reg4 = lm(data = survey_email_DOW, useperc~as.factor(day_of_week)*days_rel_DD + totalcount + as.factor(Year) + as.factor(Survey))
+summary(DOW_reg4)
+
+DOW_reg5 = lm(data = survey_email_DOW, useperc~as.factor(day_of_week)*totalcount + days_rel_DD + as.factor(Year) + as.factor(Survey))
+summary(DOW_reg5)
+
+DOW_reg6 = lm(data = survey_email_DOW, useperc~as.factor(day_of_week) + days_rel_DD + as.factor(Year) + as.factor(Survey))
+summary(DOW_reg6)
+
+
+DOW_reg7 = lm(data = survey_email_DOW, useperc~as.factor(day_of_week)*days_rel_DD + as.factor(Year) + as.factor(Survey))
+summary(DOW_reg7)
+```
+
+
+# exploratory plots
+
+reformatting date variables in the survey datasets to make it easier for visualizations
+```{r}
+
+aces$CKNDTE00 = as.Date(aces$CKNDTE00, format = "%Y-%m-%d")
+aces$AUTHDATE_BANK = as.Date(aces$AUTHDATE_BANK, format = "%Y-%m-%d")
+
+
+arts$CKNDTE00 = as.Date(arts$CKNDTE00, format = "%Y-%m-%d")
+arts$AUTHDATE_BANK = as.Date(arts$AUTHDATE_BANK, format = "%Y-%m-%d")
+
+
+awts$CKNDTE00 = as.Date(awts$CKNDTE00, format = "%Y-%m-%d")
+awts$AUTHDATE_BANK = as.Date(awts$AUTHDATE_BANK, format = "%Y-%m-%d")
+
+
+sas$CKNDTE00 = as.Date(sas$CKNDTE00, format = "%Y-%m-%d")
+sas$AUTHDATE_BANK = as.Date(sas$AUTHDATE_BANK, format = "%Y-%m-%d")
+
+
+cosasm$AUTHDATE_BANK = as.Date(cosasm$AUTHDATE_BANK, format = "%Y-%m-%d")
+```
+
+reformatting the date variable in the compendium communication dataset. cleaning the com_type so that every value is lowercase
+
+```{r}
+
+comm$date = as.Date(comm$date, format = "%Y-%m-%d")
+
+survey$open_date = as.Date(survey$open_date, format = "%Y-%m-%d")
+survey$due_date = as.Date(survey$due_date, format = "%Y-%m-%d")
+survey$close_date = as.Date(survey$close_date, format = "%Y-%m-%d" )
+
+comm$com_type = tolower(comm$com_type)
+```
+
+filtering aces data to only include the used observations for 2022 statistical period
+```{r}
+# making dataset of when the new value is used 
+# will be used to plot, only looking at when codes are used
+aces22 = aces %>% filter(STATP00 == "2022A1")
+
+ac_used22 = aces22 %>% filter(AUTH_USED == "U") %>% select(c(ID, CKNDTE00, AUTHDATE_BANK))
+```
+
+
+code for subsets communication dataset to only include all communication dates in 2022 ACES statistical period
+```{r}
+
+AC22 = comm %>% filter(survey_ID == "ACES_2022")
+AC22dates = unique(AC22$date)
+
+
+AC22_v2 = AC22 %>% distinct(date, com_type, message_type)
+
+```
+
+
+
+**Begin visualizations** testing visualizations on ACES 2022
+
+Looked initially at density plots for used population but recognized that it may not be the best way to represent data; overweights early records and underweights later responses.
+
+plots vertical lines of communication and includes the date of communication as label
+```{r}
+ac_used22_clean = drop_na(ac_used22)
+
+f1 = ggplot(ac_used22_clean, aes(x = AUTHDATE_BANK)) + geom_density()
+
+f1 + geom_vline(data = AC22_v2, aes(xintercept = as.numeric(date), color = com_type), linetype = "dashed") + scale_color_manual(values = c("mail" = "red", "email" = "blue", "call" = "green")) + geom_text(data = data.frame(dates = AC22_v2$date, labels = AC22_v2$date),aes(x=dates, y=0, label = labels), angle = 90, vjust = -0.5, hjust =-3.5) + theme_minimal()
+
+
+```
+histogram version of density plot above
+```{r}
+ggplot(ac_used22_clean, aes(x = AUTHDATE_BANK)) + geom_histogram()
+```
+
+
+cumulative density plot that shows increase in used rate over time -- only for used population
+```{r}
+ggplot(ac_used22_clean, aes(AUTHDATE_BANK)) + stat_ecdf(geom = "step") + geom_vline(xintercept = as.numeric(AC22_v2$date), linetype = "dashed") + geom_vline(xintercept = as.numeric(as.Date("2023-04-25")), color = "red")
+```
+
+
+bar plot of communication count for 2022 ACES
+
+```{r}
+ggplot(AC22_v2, aes(x = message_type)) + geom_bar()
+```
+
+
+
+creating variables for daily used count and percentage for both the used subgroup and the total survey population
+
+```{r}
+
+ac_used22_total = nrow(ac_used22_clean)
+ac22_total = nrow(aces22)
+
+ac_used22_perc = ac_used22_clean %>% group_by(AUTHDATE_BANK) %>% summarise(count_used = n()) %>% arrange(AUTHDATE_BANK) %>% mutate(cumulative_count = cumsum(count_used))
+
+ac_used22_perc = ac_used22_perc %>% mutate(tot_used_remaining = ac_used22_total - cumulative_count, perc_overall = cumulative_count / ac22_total, tot_notused = ac22_total - cumulative_count, used_ratio = count_used / tot_used_remaining, used_overall_ratio = count_used / tot_notused)
+
+```
+
+
+
+setting color scheme for visualizations
+
+```{r}
+comm_colors <- c("mail" = "#0095A8", "call" = "#112E51", "email" = "#FF7043", "robocall" = "#78909C")
+#comm_colors <- c("MAIL" = "#0095A8", "CALL" = "#112E51", "EMAIL" = "#FF7043", "ROBOCALL" = "#78909C")
+
+
+f2 = ggplot(ac_used22_perc, aes(x = AUTHDATE_BANK, y=used_ratio)) + geom_line(linewidth = 1) + scale_x_date(limits = c(as.Date("2023-02-20"), as.Date("2023-09-20")), date_breaks = "1 month") + ylim(0,.3) 
+
+f2 + geom_vline(data = AC22_v2, aes(xintercept = as.numeric(date), color = com_type), linewidth = 0.75, linetype = "dotted") + scale_color_manual(values = comm_colors) + geom_vline(xintercept = as.numeric(as.Date("2023-04-25")), linetype = "dashed", size =1) + ggtitle("ACES 2022 Authentication Code Burn Rate \n New used/Not used ratio (Used subgroup)") + theme_minimal()
+
+```
+##example plot for presentation slidedeck
+
+
+```{r}
+#creates line plot of authentication code ratio over the course of the 2022 ACES collection period (2023 calendar year)
+f3 = ggplot(ac_used22_perc, aes(x = AUTHDATE_BANK, y=used_overall_ratio)) + geom_line(linewidth = 1, color = "#112E51") + ylim(0,.05) + scale_x_continuous(name ="", breaks = seq.Date(as.Date("2023-03-01"), as.Date("2023-10-01"), by = "3 month"), labels = ~ format.Date(.x, "%B %Y")) + ylab("Ratio of Daily Burn Rate to Sample Population")
+
+#adds vertical lines that represent the dates of email and mail communication across the statistical period
+communication_stat_period = f3 + geom_vline(data = AC22_v2 %>% filter(com_type %in% c("email", "mail")), aes(xintercept = as.numeric(date), color = com_type), linewidth = 1, linetype = "dotted") + scale_color_manual(name = "Communication \nMethod", labels = c("Email", "Mail"), values = comm_colors) + ggtitle("Contact Efforts Increase Survey Engagement Across Survey Period", subtitle = "2022 Annual Capital Expenditures Survey (ACES)") + theme_minimal() + theme(text = element_text(size = 14))
+
+communication_stat_period
+
+ggsave(filename = "Figures/communication_over_stat_period.png", plot = communication_stat_period, width = 10, height = 6, units = "in")
+```
+
+
+
+```{r}
+#creates a cumulative density plot with vertical lines for communication dates
+ggplot(ac_used22_clean, aes(AUTHDATE_BANK)) + stat_ecdf(geom = "step") + geom_vline(data = AC22_v2, aes(xintercept = as.numeric(date), color = com_type), linetype = "dashed") + scale_color_manual(values = c("mail" = "red", "email" = "blue", "call" = "green")) + theme_minimal()
+
+```
+
+```{r}
+ggplot(ac_used22_clean, aes(x = AUTHDATE_BANK)) + stat_ecdf(geom = "area", fill = "blue", alpha = 0.2, pad = FALSE) + geom_vline(data = AC22_v2, aes(xintercept = as.numeric(date), color = message_type), linetype = "dashed", linewidth = 0.75) + geom_vline(xintercept = as.numeric(as.Date("2023-04-25")), size =1) + theme_minimal()
+
+```
+
+**Creating functions to automate visualization creation for all surveys**
+
+Function calculate_used_ratio calculates the count of organizations who burn authentication code on a certain day divided by the cumulative count of those who have not yet completed. Function used_graphs takes inputs to create cumulative density plot and ratio graphs for a given survey and year.
+```{r}
+
+comm$message_type = toupper(comm$message_type)
+comm$message_type = factor(comm$message_type, levels=c("INITIAL", "DDR", "FU", "UAA", "UER", "CLOSEOUT"))
+
+```
+
+
+
+```{r}
+comm_colors <- c("mail" = "#0095A8", "call" = "#112E51", "email" = "#FF7043", "robocall" = "#78909C")
+survey_cols <- c("ACES" = "#26C6DA", "ARTS" = "#112E51", "AWTS" = "#FF7043", "COS/ASM" = "#78909C", "SAS" = "#2E78D2")
+
+calculate_used_ratio <- function(dataset1, dataset2, surveyname){
+  #function automates the calculation of the cumulative count of authentication codes used, and two ratios to understand how that day's count relates to the used population and the overall population; takes into account removing those who have already burned their code
+  if (surveyname == "COS/ASM"){
+    total_d1 = length(unique(dataset1$AUTHCODE))
+  }
+  else {
+    total_d1 = nrow(dataset1)
+  }
+  
+  clean_dataset = na.omit(dataset2)
+  total_d2 = nrow(clean_dataset)
+  
+  dataset_perc = clean_dataset %>% group_by(AUTHDATE_BANK) %>% summarise(count_used = n()) %>% arrange(AUTHDATE_BANK) %>% mutate(cumulative_count = cumsum(count_used))
+  dataset_perc = dataset_perc %>% mutate(tot_used_remaining = total_d2 - cumulative_count, tot_notused = total_d1 - cumulative_count, used_ratio = count_used / tot_used_remaining, used_overall_ratio = count_used / tot_notused)
+  
+  return(dataset_perc)
+}
+
+
+used_graphs <- function(surveydata, comp_comdata, comp_survdata, suID, statpvalue){
+  #function automates creating multiple exploratory graphs for each survey year to get a sense of the communication efforts and the burn rate over the colleciton period
+  #returns 4 plots for each survey year
+  surveyname = sapply(strsplit(suID, "_"), head, 1)
+  #writing an if statement because the COS/ASM dataset has a different structure/variables than the others
+  if (surveyname == "COS/ASM"){
+    surveyyear = surveydata %>% filter(YEAR == statpvalue)
+    used_survey = surveyyear %>% filter(AUTH_USED == "U") %>% select(c(COMPANYID, YEAR, AUTHCODE, AUTHDATE_BANK, AUTH_USED)) %>% drop_na()
+  }
+  else{
+    surveyyear = surveydata %>% filter(STATP00 == statpvalue)
+    used_survey = surveyyear %>% filter(AUTH_USED == "U") %>% select(c(ID, CKNDTE00, AUTHDATE_BANK)) %>% drop_na()
+  }
+  
+  comm_strategy = comp_comdata %>% filter(survey_ID == suID)
+  comm_dates = comm_strategy %>% distinct(date, com_type, message_type)
+  
+  surv_keydates = comp_survdata %>% filter(ID == suID)
+  
+  used_survey_v2 = calculate_used_ratio(surveyyear, used_survey, surveyname)
+  
+  
+  used_survey_v3 = used_survey_v2[used_survey_v2$tot_used_remaining > 20,]
+  
+  #plot 1 is a frequency stacked bargraph of the different communication types, color indicates communication method
+  plot1 = ggplot(comm_dates, aes(x = message_type, fill = com_type)) + geom_bar(position = "dodge") + scale_fill_manual(values = comm_colors) + ggtitle(paste("Communication Messages for", suID)) + theme_minimal() 
+  
+  #plot 2 is a cumulative density plot of the used cases over time
+  plot2 = ggplot(used_survey, aes(AUTHDATE_BANK)) + stat_ecdf(geom = "step", linewidth = 1) + ggtitle(paste("Cumulative Burn Rate for", suID)) + geom_vline(data = surv_keydates, aes(xintercept = as.numeric(due_date)), linetype = "dashed", color = "#FF7043", linewidth = 0.75) + geom_vline(data = surv_keydates, aes(xintercept = as.numeric(open_date)), linetype = "dashed", color = "#006C7A", linewidth = 0.75) + geom_vline(data = surv_keydates, aes(xintercept = as.numeric(close_date)), linetype = "dashed", color = "#006C7A", linewidth = 0.75) + theme_minimal() 
+  
+  #plot 3 is the plot of used count / remaining un-used ratio for only the used population
+  plot3 = ggplot(used_survey_v3, aes(x = AUTHDATE_BANK, y=used_ratio)) + geom_line(linewidth = 1) + ggtitle(paste("Ratio of Burn Count to Not-Used Population for \n", suID, "(Used Subgroup)")) + geom_vline(data = comm_dates, aes(xintercept = as.numeric(date), color = com_type), linetype = "dashed", linewidth = 0.75) + theme_minimal() 
+  
+  #plot 4 is the plot of used count / remaining un-used ratio for the whole sample
+  plot4 = ggplot(used_survey_v3, aes(x = AUTHDATE_BANK, y=used_overall_ratio)) + geom_line(linewidth = 1) + ggtitle(paste("Ratio of Burn Count to Not-Used Population for \n", suID, "(Total Sample)")) + geom_vline(data = comm_dates, aes(xintercept = as.numeric(date), color = com_type), linetype = "dashed", linewidth = 0.75) + theme_minimal() 
+  print(plot1)
+  print(plot2)
+  print(plot3)
+  print(plot4)
+  
+}
+
+#example of how code runs; intially had all surveys/collection periods but removed for simplicity of code
+used_graphs(awts, comm, survey, "AWTS_2022","2022A1")
+```
+
+
+##calculating authentication code daily burn rate in relation to survey due date
+```{r}
+
+stat_across_years <- function(surveydata, comp_survdata, surveyname){
+  #function groups observations in surveydata by authentication code burn date and calculates metrics
+  #also indicates how the date relates to the survey year due date
+  #saves results in a new dataframe
+  
+  
+  #inputs:
+  #surveydata = survey specific dataset with the auth code usages
+  #comp_survdata = compendium survey dataset
+  #surveyname = character value; name of survey "ACES", "COS/ASM", "AWTS", "ARTS", "SAS"
+  
+ 
+  
+  
+  #creating empty dataframe to store results in
+  survey_results = data.frame()
+  
+  #pulling the relevant rows from the compendium survey dataset to only look at the survey-specific information. Also filtering out years before 2017
+  #since those periods are not in our survey dataset
+  comp_allsurveystatp = comp_survdata %>% filter(title == surveyname & year > 2016) %>% select(c(ID, title, year, due_date))
+  
+  #writing an if statement because the COS/ASM dataset has a different structure/variable names than the others (ACES/AWTS/ARTS/SAS)
+  #pulling a unique list of the statistical periods in the survey dataset
+  if (surveyname == "COS/ASM"){
+    surveydata_clean = surveydata[is.na(surveydata$YEAR) == FALSE,]
+    allsurveyyears = unique(surveydata_clean$YEAR)
+  }
+  else{
+    surveydata_clean = surveydata[is.na(surveydata$STATP00) == FALSE,]
+    allsurveyyears = unique(surveydata_clean$STATP00)
+  }
+  
+  #for loop iterating through the unique list of survey statistical periods to understand how each day's burn rate relates to the survey due date
+  for (i in seq_along(allsurveyyears)){
+    
+    #pulls a specific statistical period from the list (in format like "2017A1")
+    surveyperiod = allsurveyyears[i]
+    #indexes the corresponding year in the compendium spreadsheet; does this because the year in the compendium is an integer value (2017) rather than string; the fourth column in the subsetted compendium spreadsheet contains the due date
+    surveyduedate = comp_allsurveystatp[i,4]
+    #another if statement becuase the COS/ASM dataset has a different structure/variable names than the other datasets
+    
+    if (surveyname == "COS/ASM"){
+      #filtering survey dataset to focus only on a particular statistical period
+      surveyyear = surveydata %>% filter(YEAR == surveyperiod)
+      
+      #create a subsample that only includes the cases that burned their authentication code
+      used_survey = surveyyear %>% filter(is.na(AUTHDATE_BANK) == FALSE & AUTH_USED %in% c("E", "U")) %>% select(c(COMPANYID, YEAR, AUTHCODE, AUTHDATE_BANK, AUTH_USED)) %>% drop_na()
+      
+      #calculate length of two datasets (whole sample and used population)
+      #for COS/ASM dataset the authcode is the unique variable
+      total_d1 = length(unique(surveyyear$AUTHCODE))
+      total_d2 = nrow(used_survey)
+      
+      #using pipes to group observations by their authdate_bank variable (when they burned the auth code), count those that have the same date, calculate the cumulative count of used burn rates over time, and determine how the authdate_bank value compares to the survey due date 
+      #days_relative_duedate: value will be negative if the authdate_bank occurs before the due date, and will be positive if it occurs after the due date
+      dataset_perc = used_survey %>% group_by(YEAR, AUTHDATE_BANK) %>% summarise(count_used = n()) %>% arrange(AUTHDATE_BANK) %>% mutate(cumulative_count = cumsum(count_used), days_relative_duedate =  as.numeric(difftime(AUTHDATE_BANK, surveyduedate, units = "days")))
+      
+      #using pipes to calculate the number of outstanding used observations for that survey period (total survey used count - used cumulative count at that time), the number of the sample that has yet to burn the authcode (whole sample - used cumulative count at that time), and the ratio of those values with the count of authentication codes used on that day. 
+      dataset_perc = dataset_perc %>% mutate(tot_used_remaining = total_d2 - cumulative_count, tot_notused = total_d1 - cumulative_count, used_ratio = count_used / tot_used_remaining, used_overall_ratio = count_used / tot_notused)
+      
+    }
+    else{
+      surveyyear = surveydata %>% filter(STATP00 == surveyperiod)
+      used_survey = surveyyear %>% filter(is.na(AUTHDATE_BANK) == FALSE & X_ASTAT00 %in% c("E", "U")) %>% select(c(ID, STATP00, CKNDTE00, AUTHDATE_BANK)) %>% drop_na()
+      total_d1 = nrow(surveyyear)
+      total_d2 = nrow(used_survey)
+      dataset_perc = used_survey %>% group_by(STATP00, AUTHDATE_BANK) %>% summarise(count_used = n()) %>% arrange(AUTHDATE_BANK) %>% mutate(cumulative_count = cumsum(count_used), days_relative_duedate =  as.numeric(difftime(AUTHDATE_BANK, surveyduedate, units = "days")))
+      dataset_perc = dataset_perc %>% mutate(tot_used_remaining = total_d2 - cumulative_count, tot_notused = total_d1 - cumulative_count, used_ratio = count_used / tot_used_remaining, used_overall_ratio = count_used / tot_notused)
+      
+    }
+    #saves the results for that particular statistical period into a dataset
+    survey_results = bind_rows(survey_results, dataset_perc)
+  }
+  
+ #returns dataset that contains all values relative to authentication code burn rate in relation to due date for all statistical periods for that survey 
+  return(survey_results)
+}
+
+awts_stats = stat_across_years(awts, survey, "AWTS")
+aces_stats = stat_across_years(aces, survey, "ACES")
+arts_stats = stat_across_years(arts, survey, "ARTS")
+sas_stats = stat_across_years(sas, survey, "SAS")
+cosasm_stats = stat_across_years(cosasm, survey, "COS/ASM")
+```
+
+##AWTS graphs that show authentication code burn count and rates for AWTS. 
+initially had the code below for all 5 datasets but removed for simplicity of code
+
+```{r}
+ggplot(awts_stats[awts_stats$tot_used_remaining > 20,], aes(x = days_relative_duedate, y = used_overall_ratio, colour = STATP00)) + geom_line()
+
+```
+
+```{r}
+#looking only at period before due date
+awts_beforeDD = awts_stats %>% filter(days_relative_duedate <= 0)
+
+ggplot(awts_beforeDD, aes(x = days_relative_duedate, y = used_overall_ratio, colour = STATP00)) + geom_line(linewidth = 0.75) + ggtitle("Ratio of Burn Count to Not-Used Population for \n AWTS (Total Sample) before Due Date, by Statistical Period") + theme_minimal()
+ggplot(awts_beforeDD, aes(x = days_relative_duedate, y = used_ratio, colour = STATP00)) + geom_line(linewidth = 0.75) + ggtitle("Ratio of Burn Count to Not-Used Population for \n AWTS (Used Population) before Due Date, by Statistical Period") + theme_minimal()
+
+```
+
+```{r}
+#looking at period 50 days after due date
+awts_afterDD1 = awts_stats %>% filter(days_relative_duedate <= 50 & days_relative_duedate > 0)
+
+ggplot(awts_afterDD1, aes(x = days_relative_duedate, y = used_overall_ratio, colour = STATP00)) + geom_line(linewidth = 0.75) + ggtitle("Ratio of Burn Count to Not-Used Population for AWTS (Total Sample) \n 50 days after Due Date, by Statistical Period") + theme_minimal()
+ggplot(awts_afterDD1, aes(x = days_relative_duedate, y = used_ratio, colour = STATP00)) + geom_line(linewidth = 0.75) + ggtitle("Ratio of Burn Count to Not-Used Population for AWTS (Used Population) \n 50 days after Due Date, by Statistical Period") + theme_minimal()
+
+```
+
+```{r}
+#looking at period within 100 days of due date (50 before, 50 after)
+awts_within50DD = awts_stats %>% filter(abs(days_relative_duedate) <= 50)
+
+ggplot(awts_within50DD, aes(x = days_relative_duedate, y = count_used, colour = STATP00)) + geom_line(linewidth = 0.5) + ggtitle("Burn Count for AWTS within 50 days of Due Date \n by Statistical Period") + theme_minimal() + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+
+ggplot(awts_within50DD, aes(x = days_relative_duedate, y = used_overall_ratio, colour = STATP00)) + geom_line(linewidth = 0.5) + ggtitle("Ratio of Burn Count to Not-Used Population for AWTS (Total Sample) \n within 50 days of Due Date, by Statistical Period") + theme_minimal() + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+
+ggplot(awts_within50DD, aes(x = days_relative_duedate, y = used_ratio, colour = STATP00)) + geom_line(linewidth = 0.5) + ggtitle("Ratio of Burn Count to Not-Used Population for AWTS (Used Population) \n within 50 days of Due Date, by Statistical Period") + theme_minimal() + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75)
+
+```
+
+
+```{r}
+
+comm[c('Survey', 'Year')] <- str_split_fixed(comm$survey_ID, '_', 2)
+
+```
+
+```{r}
+
+aces_dates = unique(comm$date[comm$Survey == "ACES"])
+awts_dates = unique(comm$date[comm$Survey == "AWTS"])
+arts_dates = unique(comm$date[comm$Survey == "ARTS"])
+sas_dates = unique(comm$date[comm$Survey == "SAS"])
+cosasm_dates = unique(comm$date[comm$Survey == "COS/ASM"])
+
+```
+
+#looking at data for multiple statistical periods in one visualizations to see how they compare
+
+```{r}
+
+ggplot(sas_within50DD %>% filter(STATP00 %in% c("2019A1", "2022A1")), aes(x = days_relative_duedate, y = count_used, colour = STATP00)) + geom_line(linewidth = 0.5) + ggtitle("Burn Count for SAS within 50 days of Due Date \n by Statistical Period") + geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.75) + geom_point(sas_within50DD %>% filter(AUTHDATE_BANK %in% sas_dates), aes(x = days_relative_duedate, y = count_used, colour = STATP00), shape = 1)
+
+```
+
+
+Saving/Writing the datasets as CSVs
+```{r}
+#write.csv(aces_stats, "inputs/auth_code_br_duedate/aces_daily_br.csv", row.names = FALSE)
+#write.csv(sas_stats, "inputs/auth_code_br_duedate/sas_daily_br.csv",row.names = FALSE)
+#write.csv(awts_stats, "inputs/auth_code_br_duedate/awts_daily_br.csv", row.names = FALSE)
+#write.csv(arts_stats, "inputs/auth_code_br_duedate/arts_daily_br.csv", row.names = FALSE)
+#write.csv(cosasm_stats, "inputs/auth_code_br_duedate/COSASM_daily_br.csv",row.names = FALSE)
+
+
+```
+
+# exploratory analysis of early br
+
+```{r}
+survey_early_counts_dates_= survey_early_counts_dates %>%  select(-per_burn_used_before_dd) %>% 
+  mutate(per_burn_total_before_dd = per_burn_total_before_dd / 100)
+# renaming so there's no error in pivot long
+survey_early_counts_longer = survey_early_counts_dates_  %>%
+  pivot_longer(cols = starts_with("per_"), names_to = "Type", values_to = "Value")
+survey_early_counts_longer
+```
+```{r}
+# plotting trends of proportion of due date reminders to population along with early burn rate over the years 
+
+plot_over_years = function(survey_name){
+  ggplot(data = survey_early_counts_longer %>% filter(title == survey_name & !(Type %in% c("per_email_in", "per_mail_in"))), 
+       aes(x = year, y = Value, group = Type, color = Type)) + 
+  geom_line() + geom_point() + theme_minimal() + 
+    labs(title = "Proportion of Respondents Receiving DDR Emails and Mailings and Early Burn Rate Over Time", x = "Year", y = "Percent")
+}
+
+plot_over_years("ACES")
+plot_over_years("ARTS")
+plot_over_years("AWTS")
+plot_over_years("SAS")
+plot_over_years("COS/ASM")
+```
+
+```{r}
+# getting number of total ddr for each survey 
+survey_early_counts_dates_$percent_ddr = (
+  survey_early_counts_dates_$n_mail_DDR + survey_early_counts_dates_$n_email_DDR)/survey_early_counts_dates_$n_participants
+early_br_ddr_longer = pivot_longer(survey_early_counts_dates_, cols = c("percent_ddr", "per_burn_total_before_dd"), 
+                                           names_to = "Type", values_to = "Value")
+early_br_ddr_longer
+```
+
+```{r}
+
+
+plot_earlybr_ddr = function(survey_name){
+  ggplot(data = early_br_ddr_longer %>% filter(title == survey_name), aes(x = year, y = Value, group = Type, color = Type))+ geom_line()
+}
+
+plot_earlybr_ddr("ACES")
+plot_earlybr_ddr("ARTS")
+plot_earlybr_ddr("AWTS")
+plot_earlybr_ddr("SAS")
+plot_earlybr_ddr("COS/ASM")
+```
+
+# modeling
+```{r}
+survey_adj = survey %>%
+  mutate(
+    open_month = month(open_date),       
+    open_day = day(open_date),           
+    open_weekday = wday(open_date)  ,
+    due_month = month(due_date),       
+    due_day = day(due_date),           
+    due_weekday = wday(due_date) ,
+    close_month = month(close_date),       
+    close_day = day(close_date),           
+    close_weekday = wday(close_date) 
+    
+  )
+# removing check in because it would not hypothetically exist if you are using this to predict, also focusing on predicting on br
+survey_adj = survey_adj %>% select(-c(ID, open_date, due_date, soft_close, close_date, final_ci,
+                                     used,total, n_burn_before_dd, n_burn_after_dd, per_burn_used_before_dd,
+                                    per_burn_total_before_dd ))
+survey_adj
+```
+
+Dummy variables for title 
+```{r}
+survey_dummy_na = dummy_cols(survey_adj, select_columns = "title", remove_selected_columns = TRUE) %>%
+  select(-c(emails_used, title_SAS)) # removed due to multicollinearity
+survey_dummy = survey_dummy_na%>% na.omit()
+```
+
+Testing lin regression
+```{r}
+set.seed(14)
+# getting 2 rows for cross validation 
+test_linreg_v1 = survey_dummy[sample(nrow(survey_dummy), 2), ]
+train_linreg_v1 = survey_dummy[-sample(nrow(survey_dummy), 2), ]
+linreg_v1 = lm(br ~., data = train_linreg_v1)
+summary(linreg_v1)
+```
+
+Finding multicollinearity and singularities
+```{r}
+alias(linreg_v1)
+```
+
+Looking at variance and performance
+```{r}
+# variance 
+var(train_linreg_v1$br)
+var(test_linreg_v1$br)
+```
+```{r}
+pred_linreg_v1 = predict(linreg_v1, newdata = test_linreg_v1 %>% select(-br))
+pred_linreg_v1 # predictions
+test_linreg_v1$br # actual 
+test_linreg_v1 # sas 2019 and arts 2022
+sqrt(mean((pred_linreg_v1 - test_linreg_v1$br)^2))
+```
+```{r}
+# trying predictions with later and earlier years 
+fake_year = test_linreg_v1[2, ] # making fake observation with 2022 arts but with year 2024
+fake_year["year"] = 2024
+unseen_years = rbind(survey_dummy_na %>% filter(year==2015|year==2016) ,  fake_year)
+unseen_years
+
+```
+```{r}
+pred_unseen_linreg_v1 = predict(linreg_v1, newdata = unseen_years %>% select(-br))
+pred_unseen_linreg_v1
+# earlier years are lower while the fake 2024 pred is slightly higher than the 2022 pred
+# hopefully with more data for more years, it would make better predictions
+```
+
+# Modeling early burn rate against survey 
+# create columns which depict proportion of population which recieve mail initial/mail ddr/email ddr/email initial
+# use per_burn_total_before_dd column for early br 
+```{r}
+comm_survey = merge(survey, comm, by.x = "ID", by.y = "survey_ID")
+comm_survey
+
+# getting counts for emails 
+comm_email = merge(comm, email %>% select(c(com_ID, n_sent)), by.x = "ID", by.y = "com_ID")
+comm_email
+```
+```{r}
+comm_mail = merge(comm, mail %>% select(c(com_ID, n_sent)), by.x = "ID", by.y = "com_ID")
+comm_mail
+```
+```{r}
+# combining counts
+comm_email_mail = rbind(comm_email, comm_mail)
+comm_email_mail
+```
+```{r}
+# counts for each type of comm before due date 
+early_comm = comm_email_mail %>% group_by(survey_ID) %>% summarise(n_mail_initial = sum(n_sent[com_type=="mail" & message_type=="initial"]),
+          n_email_initial = sum(n_sent[com_type=="email" & message_type=="initial"]),
+          n_mail_DDR = sum(n_sent[com_type=="mail" & message_type=="DDR"]),
+          n_email_DDR = sum(n_sent[com_type=="email" & message_type=="DDR"]))
+```
+
+```{r}
+# this will remove m3ufo since there are no email/mail details
+survey_early_counts = merge(survey, early_comm, by.x = "ID", by.y = "survey_ID") 
+# removing id
+survey_early_counts_dates = survey_early_counts %>%
+  mutate(
+    open_month = month(open_date),       
+    open_day = day(open_date),           
+    open_weekday = wday(open_date)  ,
+    due_month = month(due_date),       
+    due_day = day(due_date),           
+    due_weekday = wday(due_date) ,
+    close_month = month(close_date),       
+    close_day = day(close_date),           
+    close_weekday = wday(close_date) 
+    
+  )
+# creating proportion columns 
+survey_early_counts_dates$per_mail_in = survey_early_counts_dates$n_mail_initial/survey_early_counts_dates$n_participants
+survey_early_counts_dates$per_email_in = survey_early_counts_dates$n_email_initial/survey_early_counts_dates$n_participants
+survey_early_counts_dates$per_mail_ddr = survey_early_counts_dates$n_mail_DDR/survey_early_counts_dates$n_participants
+survey_early_counts_dates$per_email_ddr = survey_early_counts_dates$n_email_DDR/survey_early_counts_dates$n_participants
+# removing check in because it would not hypothetically exist if you are using this to predict, also focusing on predicting on br
+survey_early_counts_adj = survey_early_counts_dates %>% select(-c(ID, open_date, due_date, soft_close, close_date, final_ci,
+                                     used,total, n_burn_before_dd, n_burn_after_dd, per_burn_used_before_dd , br))
+```
+
+```{r}
+# creating dummy columns then removing na values 
+survey_early_counts_na = dummy_cols(survey_early_counts_adj, select_columns = "title", remove_selected_columns = TRUE) %>%
+  select(-c(emails_used, title_SAS)) # removed due to multicollinearity
+survey_early_counts_dummy = survey_early_counts_na%>% na.omit()
+survey_early_counts_dummy
+```
+
+```{r}
+# model with proportions 
+set.seed(14)
+linreg_v2 = lm(per_burn_total_before_dd ~., data = survey_early_counts_dummy %>%
+                 select(-c(n_mail_initial,n_email_initial, n_mail_DDR, n_email_DDR)))
+summary(linreg_v2)
+```
+```{r}
+# model with counts 
+set.seed(14)
+linreg_v3 = lm(per_burn_total_before_dd ~., data = survey_early_counts_dummy %>%
+                 select(-c(per_mail_in,per_email_in, per_mail_ddr, per_email_ddr)))
+summary(linreg_v3)
+```
+
+
+#adding dummy variables for whether that type of communication was used at all and creating an interaction term for it and the percentage
+```{r}
+
+survey_early_counts_dummy_v2 = data.table::copy(survey_early_counts_dummy)
+
+survey_early_counts_dummy_v2$IE_dummy = ifelse(survey_early_counts_dummy_v2$per_email_in >0, 1, 0)
+survey_early_counts_dummy_v2$DDRM_dummy = ifelse(survey_early_counts_dummy_v2$per_mail_ddr >0, 1, 0)
+survey_early_counts_dummy_v2$DDRE_dummy = ifelse(survey_early_counts_dummy_v2$per_email_ddr >0, 1, 0)
+
+survey_early_counts_dummy_v2$IE_int = survey_early_counts_dummy_v2$IE_dummy * survey_early_counts_dummy_v2$per_email_in
+survey_early_counts_dummy_v2$DDRM_int = survey_early_counts_dummy_v2$DDRM_dummy * survey_early_counts_dummy_v2$per_mail_ddr
+survey_early_counts_dummy_v2$DDRE_int = survey_early_counts_dummy_v2$DDRE_dummy * survey_early_counts_dummy_v2$per_email_ddr
+
+```
+
+```{r}
+
+linreg_v4 = lm(per_burn_total_before_dd ~ year + n_participants + uaa_used + uer_used + IE_dummy + DDRM_dummy + DDRE_dummy + per_email_in+ per_mail_ddr+ per_email_ddr+ IE_int + DDRM_int + DDRE_int + collection_length + open_month + open_weekday + open_day + due_month + due_day + due_weekday + title_ACES + title_ARTS + title_AWTS + `title_COS/ASM`, data = survey_early_counts_dummy_v2)
+
+summary(linreg_v4)
+```
+
+
